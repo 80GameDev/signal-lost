@@ -1,63 +1,135 @@
 # app/scenes/boot_scene.rb
 #
-# 启动场景：Day 2 基础波形可视化
-# 在 Day 1 的基础上，增加：
-# - 正弦波形绘制（模拟无线电波）
-# - 可调节的频率参数（用键盘 ← → 控制）
+# 启动场景：Day 2–3 基础波形 + 调频滑块 UI
 #
-# 说明：
-# - 频率越高，屏幕上的波形周期越密集；
-# - 后续 Day 3 会把键盘控制升级为真正的“调频滑块 UI”。
+# Day 2:
+#   - 使用 args.outputs.lines 绘制一条正弦波，模拟无线电波形；
+#   - 通过键盘 ← → 调整频率。
+# Day 3:
+#   - 增加一个「调频滑块」(frequency slider)，点击滑块即可改变目标频率；
+#   - 滑块和内部的 wave_freq / frequency_target 状态保持同步。
 
 class BootScene
   def tick(args)
+    defaults(args)
     handle_input(args)
+    update_derived_state(args)
+    render(args)
+  end
+
+  # ---- 状态初始化 --------------------------------------------------------
+
+  def defaults(args)
+    s = args.state
+
+    # 频率范围：可以根据手感再调
+    s.min_freq ||= 1.0
+    s.max_freq ||= 8.0
+
+    # 当前波形频率（核心物理参数）
+    s.wave_freq ||= 3.0
+
+    # Day 3: 目标频率变量（供后面其它场景使用）
+    s.frequency_target ||= s.wave_freq
+
+    # 滑块 UI 的矩形区域
+    s.slider_rect ||= { x: 200, y: 80, w: 880, h: 24 }
+
+    # 滑块的归一化值（0.0 ~ 1.0），表示在 min_freq~max_freq 之间的位置
+    if s.slider_value.nil?
+      range = (s.max_freq - s.min_freq)
+      range = 1.0 if range.zero?
+      s.slider_value = (s.wave_freq - s.min_freq) / range
+    end
+  end
+
+  # ---- 输入处理 ----------------------------------------------------------
+
+  def handle_input(args)
+    handle_keyboard_input(args)
+    handle_slider_input(args)
+  end
+
+  # 键盘 ← → 调频（兼容 Day 2）
+  def handle_keyboard_input(args)
+    s = args.state
+    step = 0.05
+
+    if args.inputs.left
+      s.wave_freq -= step
+    elsif args.inputs.right
+      s.wave_freq += step
+    end
+
+    # 限制频率在合法范围内
+    s.wave_freq = s.min_freq if s.wave_freq < s.min_freq
+    s.wave_freq = s.max_freq if s.wave_freq > s.max_freq
+
+    # 把 wave_freq 映射回 slider_value
+    range = (s.max_freq - s.min_freq)
+    range = 1.0 if range.zero?
+    s.slider_value = (s.wave_freq - s.min_freq) / range
+  end
+
+  # 鼠标点击滑块：根据点击位置设置 slider_value → wave_freq
+  def handle_slider_input(args)
+    s = args.state
+    rect = s.slider_rect
+    click = args.inputs.mouse.click
+    return unless click
+
+    # DragonRuby: click.point.inside_rect?(hash_rect) 用于点击检测
+    if click.point.inside_rect?(rect)
+      rel_x = click.point.x - rect[:x]
+      rel_x = 0 if rel_x < 0
+      rel_x = rect[:w] if rel_x > rect[:w]
+
+      s.slider_value = rel_x / rect[:w].to_f
+
+      range = (s.max_freq - s.min_freq)
+      range = 1.0 if range.zero?
+      s.wave_freq = s.min_freq + s.slider_value * range
+    end
+  end
+
+  # 把所有依赖值同步一下，方便别的系统读取
+  def update_derived_state(args)
+    s = args.state
+    s.frequency_target = s.wave_freq
+  end
+
+  # ---- 渲染 --------------------------------------------------------------
+
+  def render(args)
     render_background(args)
     render_wave(args)
-    render_title(args)
-    render_hint(args)
+    render_ui(args)
   end
 
-  private
-
-  # 处理与波形相关的输入（Day 2: 先用键盘控制）
-  def handle_input(args)
-    state = args.state
-
-    # 波形基础参数
-    state.wave_freq ||= 2.0 # 频率：决定波的“疏密”（越大越密）
-    state.wave_speed ||= 0.08 # 相位前进速度：决定波滚动的速度
-
-    kb = args.inputs.keyboard
-
-    # 用 ← → 改变频率，模拟“调频”的感觉
-    if kb.key_held.left
-      state.wave_freq -= 0.02
-    elsif kb.key_held.right
-      state.wave_freq += 0.02
-    end
-
-    # 简单限制一下频率范围，避免过于极端
-    if state.wave_freq < 0.3
-      state.wave_freq = 0.3
-    elsif state.wave_freq > 12.0
-      state.wave_freq = 12.0
-    end
-  end
-
+  # 简单的深色背景 + 顶部标题
   def render_background(args)
-    # 深蓝偏黑背景，呼应“被海水淹没的末日世界”
-    args.outputs.background_color = [5, 10, 25]
+    args.outputs.solids << [0, 0, 1280, 720, 6, 12, 24]
+
+    args.outputs.labels << [
+      640,
+      700,
+      "Signal Lost / 孤波  -  Boot Prototype",
+      1, # alignment_enum: center
+      0, # size_enum
+      200,
+      220,
+      255
+    ]
   end
 
   # 核心：绘制正弦波
   def render_wave(args)
-    state = args.state
+    s = args.state
     lines = args.outputs.lines
 
     # 初始化 & 推进相位，让波形在时间轴上“流动”
-    state.wave_phase ||= 0.0
-    state.wave_phase += state.wave_speed || 0.08
+    s.wave_phase ||= 0.0
+    s.wave_phase += s.wave_speed || 0.08
 
     screen_w = 1280
     center_y = 360 # 波形中线
@@ -70,8 +142,8 @@ class BootScene
     x = 0
     while x < screen_w
       # 根据 x、频率和相位计算正弦值
-      rad1 = state.wave_phase + x * state.wave_freq * 0.01
-      rad2 = state.wave_phase + (x + step_x) * state.wave_freq * 0.01
+      rad1 = s.wave_phase + x * s.wave_freq * 0.01
+      rad2 = s.wave_phase + (x + step_x) * s.wave_freq * 0.01
 
       y1 = center_y + Math.sin(rad1) * amplitude
       y2 = center_y + Math.sin(rad2) * amplitude
@@ -86,68 +158,68 @@ class BootScene
     args.outputs.lines << [0, center_y, screen_w, center_y, 40, 80, 120, 180]
   end
 
-  def render_title(args)
-    labels = args.outputs.labels
+  # Day 3: 调频滑块 + 文本提示
+  def render_ui(args)
+    s = args.state
+    rect = s.slider_rect
 
-    # 主标题：英文 + 中文副标题
-    labels << [
-      60,
-      700,
-      "Signal Lost",
-      6,
-      0, # size_enum, alignment_enum
+    # 滑轨
+    args.outputs.solids << [
+      rect[:x],
+      rect[:y],
+      rect[:w],
+      rect[:h],
+      20,
+      30,
+      50,
+      220
+    ]
+
+    args.outputs.borders << [
+      rect[:x],
+      rect[:y],
+      rect[:w],
+      rect[:h],
+      180,
+      200,
       230,
-      240,
       255
     ]
 
-    labels << [64, 660, "孤波 — Day 2 Wave Prototype", 3, 0, 180, 190, 210]
-  end
+    # 滑块小方块
+    handle_size = rect[:h] * 1.8
+    handle_center_x = rect[:x] + s.slider_value * rect[:w]
+    handle_center_y = rect[:y] + rect[:h] / 2
 
-  def render_hint(args)
-    labels = args.outputs.labels
-
-    labels << [
-      64,
-      620,
-      "This is the Day 2 wave prototype.",
-      2,
-      0,
-      160,
-      180,
-      200
+    args.outputs.solids << [
+      handle_center_x - handle_size / 2,
+      handle_center_y - handle_size / 2,
+      handle_size,
+      handle_size,
+      220,
+      240,
+      255,
+      255
     ]
 
-    labels << [
-      64,
-      590,
-      "← → 調整頻率 (frequency)，觀察波形變得更密 / 更疏。",
-      2,
+    # 提示文字
+    args.outputs.labels << [
+      rect[:x],
+      rect[:y] + rect[:h] + 40,
+      "← → 调节频率 / Click 滑块调频",
       0,
-      160,
-      180,
-      200
+      0,
+      200,
+      220,
+      255
     ]
 
-    labels << [64, 560, "接下來會在這個波形基礎上加入：調頻滑塊、噪聲與關卡邏輯。", 2, 0, 160, 180, 200]
-
-    labels << [
-      64,
-      520,
-      "(按 ESC 退出，確認 DragonRuby 能正常運行這個 Day 2 Demo。)",
-      1,
+    # 当前频率数值
+    args.outputs.labels << [
+      rect[:x],
+      rect[:y] + rect[:h] + 20,
+      "Current freq: #{s.wave_freq.round(2)}  (target: #{s.frequency_target.round(2)})",
       0,
-      130,
-      140,
-      160
-    ]
-
-    # 显示当前频率数值，方便调试
-    labels << [
-      64,
-      480,
-      "Current freq: #{args.state.wave_freq.round(2)}",
-      1,
       0,
       190,
       210,
