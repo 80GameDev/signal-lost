@@ -10,6 +10,9 @@
 #   Day 4:
 #     - 增加音频反馈：持续播放带噪声的无线电声，根据当前频率与目标频率的偏差，
 #       动态调整噪声与“信号音”的音量，模拟“接近真频”的感觉
+#   Day 5:
+#     - 接近提示（Proximity Hint）：当频率接近目标值时，视觉上逐步“净化”——波形更亮、抖动更小；
+#       滑块上出现目标窗口高亮带（Lock Band），并在锁定阈值内显示“Signal locked”。
 #
 # 主要目标：
 #   - 展示动态“无线电波”视觉效果
@@ -37,6 +40,10 @@ class BootScene
 
   # DragonRuby 每帧会调用当前场景的 tick(args)
   def tick(args)
+    # -------------------------------------------------------------
+    # 主循环：按帧驱动（DragonRuby 每帧调用）
+    # 步骤：初始化 → 处理输入 → 更新波形 → 更新音频 → 渲染
+    # -------------------------------------------------------------
     init_state(args) unless @initialized
     handle_input(args) # Day 2–3：键盘 + 滑块输入
     update_wave(args) # Day 2–3：根据频率更新波形动画参数
@@ -48,6 +55,10 @@ class BootScene
   # 初始化：只在第一次进入场景时执行一次
   # -------------------------------------------------------------
   def init_state(args)
+    # -------------------------------------------------------------
+    # 初始化：只在第一次进入场景时执行一次
+    # 职责：建立默认参数、UI 几何信息、音频开关等状态
+    # -------------------------------------------------------------
     s = state(args)
 
     # 逻辑频率参数
@@ -70,6 +81,7 @@ class BootScene
 
   # 一个小工具方法，统一访问本场景在 args.state 中的存储
   def state(args)
+    # 小工具：统一获取/创建本场景的 state 容器（args.state.boot_scene）
     args.state.boot_scene ||= args.state.new_entity(:boot_scene)
   end
 
@@ -77,6 +89,12 @@ class BootScene
   # 输入处理：键盘 ← → 微调 + 鼠标点击滑块
   # -------------------------------------------------------------
   def handle_input(args)
+    # -------------------------------------------------------------
+    # 输入处理：键盘 ← → 微调 + 鼠标点击滑块
+    # 说明：
+    #   - 键盘：按住左右键以恒定速度微调 slider_value
+    #   - 鼠标：点击滑块区域直接跳转到对应位置（并 clamp 到 [0, 1]）
+    # -------------------------------------------------------------
     s = state(args)
     kb = args.inputs.keyboard
     ms = args.inputs.mouse
@@ -119,6 +137,7 @@ class BootScene
     s.last_mouse_down = mouse_down
 
     # 根据 slider_value 更新当前频率
+    # 将 0~1 的 slider_value 映射为实际频率范围
     s.wave_freq = MIN_FREQ + s.slider_value * (MAX_FREQ - MIN_FREQ)
   end
 
@@ -126,6 +145,10 @@ class BootScene
   # 更新波形动画（主要是相位）
   # -------------------------------------------------------------
   def update_wave(args)
+    # -------------------------------------------------------------
+    # 更新波形动画相位：根据时间推进，让波形“流动”
+    # 备注：Kernel.tick_count 是自启动以来的帧数，60fps 下 1 秒约 60 帧
+    # -------------------------------------------------------------
     s = state(args)
     # 简单做一个基于时间的相位偏移，让波形“向前流动”
     # Kernel.tick_count 是游戏运行到现在的总帧数
@@ -144,6 +167,11 @@ class BootScene
   #   - 远离目标频率：噪声占主导，信号音几乎听不到
   # -------------------------------------------------------------
   def ensure_audio_started(args)
+    # -------------------------------------------------------------
+    # 音频：懒加载与循环播放
+    # 包含两条轨：radio_noise（噪声）与 radio_tone（信号音）
+    # 只需在首次进入场景时启动，之后每帧仅更新 gain
+    # -------------------------------------------------------------
     # 只需要在第一次进入场景时设置一次即可
     # radio_static.wav 建议是连续的“沙沙”噪声，放在 app/audio/ 下
     args.audio[:radio_noise] ||= {
@@ -161,19 +189,28 @@ class BootScene
   end
 
   def update_audio(args)
+    # -------------------------------------------------------------
+    # 根据频率偏差调节音量（Day 4）
+    # 接近目标频率：噪声减小、信号音增大；远离则相反
+    # 映射：freq_diff → proximity ∈ [0,1]（指数衰减）
+    # -------------------------------------------------------------
     s = state(args)
 
-    # 频率偏差（绝对值）
-    freq_diff = (s.wave_freq - s.frequency_target).abs
+    proximity = compute_proximity(s)
 
-    # 用一个平滑的函数把 freq_diff 映射到 [0, 1] 的“接近度”
-    # 这里使用简单的指数衰减：diff 越大，接近度越接近 0
-    proximity = Math.exp(-freq_diff * 1.0)
-    # 手动 clamp 到 [0, 1]，避免数值溢出
-    if proximity < 0.0
-      proximity = 0.0
-    elsif proximity > 1.0
-      proximity = 1.0
+    # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
+    noise_gain = 0.3 + (1.0 - proximity) * 0.7
+    # 信号音量：接近目标频率时接近 1
+    tone_gain = proximity
+
+    args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
+
+    if args.audio[:radio_tone]
+      args.audio[:radio_tone].gain = tone_gain
+      # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
+      # 比如：
+      #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
+      # 目前先保持 1.0，后续关卡需要时再开启
     end
 
     # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
@@ -196,6 +233,9 @@ class BootScene
   # 渲染：波形 + 滑块 + 文本 UI
   # -------------------------------------------------------------
   def render(args)
+    # -------------------------------------------------------------
+    # 渲染入口：背景 → 波形 → 滑块/锁定带 → 文本
+    # -------------------------------------------------------------
     s = state(args)
 
     render_background(args)
@@ -205,44 +245,68 @@ class BootScene
   end
 
   def render_background(args)
+    # -------------------------------------------------------------
+    # 背景层：提供柔和底色与边距，便于区分 UI 元素
+    # -------------------------------------------------------------
     # 简单深蓝色背景，后续可以替换为图像或更复杂的场景
     args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 5, g: 10, b: 25 }
   end
 
   def render_wave(args, s)
-    lines = []
+    # -------------------------------------------------------------
+    # 绘制波形：用多段线近似正弦曲线
+    # Day 5：离目标越近，抖动越小、亮度越高（“净化”效果）
+    # 实现：基础振幅 + 轻微随机扰动（随 proximity 衰减）
+    # -------------------------------------------------------------
+    # 接近度用于视觉“净化”
+    proximity = compute_proximity(s)
 
-    # 波形绘制区域（左右留一点边距）
+    lines = []
     x_start = 80
     x_end = 1200
     width = x_end - x_start
-
     center_y = 420
-    amplitude = 80
-    samples = 240
 
-    (0...(samples - 1)).each do |i|
+    # 振幅与随机抖动：越接近越稳定
+    base_amplitude = 56
+    # Day 5：接近时抖动收敛；远离时抖动明显
+    jitter_scale = (1.0 - proximity) * 12.0
+
+    samples = 220
+    amplitude = base_amplitude
+
+    (0..samples - 1).each do |i|
       t1 = i.to_f / samples
       t2 = (i + 1).to_f / samples
 
       x1 = x_start + t1 * width
       x2 = x_start + t2 * width
 
-      # 波形：正弦
+      # 引入轻微随机抖动（只影响远离时的“噪波”感）
+      n1 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+      n2 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+
       y1 =
         center_y +
-          Math.sin(2 * Math::PI * (t1 * s.wave_freq + s.phase)) * amplitude
+          Math.sin(2 * Math::PI * (t1 * s.wave_freq + s.phase)) * amplitude + n1
       y2 =
         center_y +
-          Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude
+          Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude + n2
 
-      lines << { x: x1, y: y1, x2: x2, y2: y2, r: 160, g: 210, b: 255 }
+      # 基础波线：颜色随接近度增亮
+      c = 160 + (95 * proximity).to_i # 160~255
+      lines << { x: x1, y: y1, x2: x2, y2: y2, r: c, g: c - 20, b: 255 }
     end
 
     args.outputs.lines << lines
   end
 
   def render_slider(args, s)
+    # -------------------------------------------------------------
+    # 绘制调频滑块（frequency slider）
+    # 元素：底条、填充条、滑块圆头、数值与强度条、锁定提示
+    # 包含：调用 render_lock_band 渲染目标频段高亮带
+    # -------------------------------------------------------------
     rect = s.slider_rect
 
     # 滑槽背景
@@ -271,17 +335,23 @@ class BootScene
   end
 
   def render_text(args, s)
+    # -------------------------------------------------------------
+    # 文本标签：辅助调试与玩家反馈（当前频率/目标/Δ/锁定状态）
+    # -------------------------------------------------------------
     rect = s.slider_rect
 
     freq = s.wave_freq
     target = s.frequency_target
+    # 频率偏差（绝对值）：越小越接近目标
     freq_diff = (freq - target).abs
+    # 将偏差映射到 [0,1]：指数衰减，远离→接近 0，接近→接近 1
     proximity = Math.exp(-freq_diff * 1.0)
     if proximity < 0.0
       proximity = 0.0
     elsif proximity > 1.0
       proximity = 1.0
     end
+
     locked = freq_diff <= LOCK_TOLERANCE
 
     # 当前频率显示（实时数值）
@@ -342,4 +412,63 @@ class BootScene
       220
     ]
   end
+end
+
+# --- Merged additions from boot_scene1.rb ---
+def compute_proximity(s)
+  # -------------------------------------------------------------
+  # 工具函数：将当前频差映射为 [0, 1] 的接近度
+  # 映射方式：proximity = exp(-|freq - target| * k)，k=1.0
+  # -------------------------------------------------------------
+  freq_diff = (s.wave_freq - s.frequency_target).abs
+  proximity = Math.exp(-freq_diff * 1.0)
+  proximity = 0.0 if proximity < 0.0
+  proximity = 1.0 if proximity > 1.0
+  proximity
+end
+def render_lock_band(args, s)
+  # -------------------------------------------------------------
+  # 目标频段高亮带（Lock Band）
+  # 说明：以 TARGET_FREQ 为中心，LOCK_TOLERANCE 为半宽，在滑块上画半透明带
+  # 同时在中心画准星线；透明度/亮度可随 proximity 轻微变化
+  # -------------------------------------------------------------
+  rect = s.slider_rect
+
+  # 目标频率在 slider 上的归一化位置
+  target_norm = (s.frequency_target - MIN_FREQ) / (MAX_FREQ - MIN_FREQ)
+  target_x = rect[:x] + rect[:w] * target_norm
+
+  # 把 LOCK_TOLERANCE 转成 slider 上的像素宽度
+  tol_norm = LOCK_TOLERANCE / (MAX_FREQ - MIN_FREQ)
+  band_w = rect[:w] * tol_norm * 2.0 # 左右各一半
+  band_x = target_x - band_w * 0.5
+
+  # 透明度随接近度稍增
+  proximity = compute_proximity(s)
+  alpha = (60 + proximity * 80).to_i
+
+  # 高亮带（轻微呼吸动画）
+  pulse = (Math.sin(Kernel.tick_count / 30.0) * 0.5 + 0.5) * 20
+  args.outputs.solids << {
+    x: band_x,
+    y: rect[:y] - 6,
+    w: band_w,
+    h: rect[:h] + 12,
+    r: 100,
+    g: 200,
+    b: 220,
+    a: alpha + pulse.to_i
+  }
+
+  # 在目标中心画一条细的准星线
+  args.outputs.lines << {
+    x: target_x,
+    y: rect[:y] - 12,
+    x2: target_x,
+    y2: rect[:y] + rect[:h] + 12,
+    r: 180,
+    g: 220,
+    b: 255,
+    a: 160
+  }
 end
