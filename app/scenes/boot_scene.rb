@@ -21,6 +21,68 @@
 # ================================================================
 
 class BootScene
+  def level_index(args)
+    args.state.level_index ||= 0
+    args.state.level_index
+  end
+
+  def level_data(args)
+    LEVELS[level_index(args)] || LEVELS.last
+  end
+
+  # <<<<<<< from a.rb
+  # def target_freq(args)
+  #   (level_data(args)[:freq] rescue nil) || (defined?(TARGET_FREQ) ? TARGET_FREQ.to_f : 4.2)
+  # end
+  # =======
+  # TARGET_FREQ = 4.2
+  # >>>>>>> from b.rb
+  #
+  # 解析：保留 B 版结构，但采用 A 版“按关卡读取”的运行时逻辑
+  def target_freq(args)
+    if (ld = level_data(args)) && ld[:freq]
+      ld[:freq].to_f
+    elsif defined?(TARGET_FREQ)
+      TARGET_FREQ.to_f
+    else
+      4.2
+    end
+  end
+
+  # <<<<<<< from a.rb
+  # def lock_tolerance(args)
+  #   (level_data(args)[:lock_tolerance] rescue nil) || 0.08
+  # end
+  # =======
+  # LOCK_TOLERANCE = 0.08
+  # >>>>>>> from b.rb
+  def lock_tolerance(args)
+    if (ld = level_data(args)) && ld[:lock_tolerance]
+      ld[:lock_tolerance].to_f
+    else
+      0.08
+    end
+  end
+
+  def level_hint(args)
+    (
+      begin
+        level_data(args)[:hint]
+      rescue StandardError
+        nil
+      end
+    )
+  end
+
+  # 若外部未定义 LEVELS，这里提供一个最小默认，保证兼容
+  LEVELS = [
+    {
+      freq: 4.2,
+      lock_tolerance: 0.08,
+      hint: "Tune to ~4.2 Hz to lock the first signal."
+    }
+  ] unless self.class.const_defined?(:LEVELS)
+
   # 一些简单的常量，方便统一调节
   SLIDER_RECT = { x: 160, y: 120, w: 960, h: 24 }.freeze
 
@@ -63,9 +125,13 @@ class BootScene
 
     # 逻辑频率参数
     s.wave_freq ||= 2.0 # 当前波形频率
-    s.frequency_target ||= TARGET_FREQ.to_f # 目标频率
-    s.slider_value ||= 0.35 # 0.0~1.0 之间的归一化值
+    s.frequency_target = target_freq(args).to_f #s.frequency_target ||= TARGET_FREQ.to_f # 目标频率
+    s.slider_value ||= 0.1 # 0.0~1.0 之间的归一化值
     s.phase ||= 0.0 # 用于波形动画的相位
+    s.wave_points = [] # 波形点缓存
+    s.wave_color = { r: 190, g: 210, b: 230 }
+    s.noise_gain = 0.5
+    s.signal_gain = 0.0
 
     # 调频滑块的矩形
     s.slider_rect ||= SLIDER_RECT.dup
@@ -152,7 +218,12 @@ class BootScene
     s = state(args)
     # 简单做一个基于时间的相位偏移，让波形“向前流动”
     # Kernel.tick_count 是游戏运行到现在的总帧数
-    s.phase = Kernel.tick_count / 60.0 * 0.6
+    # s.phase = Kernel.tick_count / 60.0 * 0.6
+    s.wave_freq = MIN_FREQ + (MAX_FREQ - MIN_FREQ) * s.slider_value
+
+    # 相位推进，使波形动起来
+    s.phase += s.wave_freq / 60 * 0.6
+    # s.phase -= 2 * Math::PI while s.phase > 2 * Math::PI
   end
 
   # -------------------------------------------------------------
@@ -241,7 +312,8 @@ class BootScene
     render_background(args)
     render_wave(args, s)
     render_slider(args, s)
-    render_text(args, s)
+    render_proximity_ui(args, s)
+    render_lock_band(args, s)
   end
 
   def render_background(args)
@@ -308,8 +380,7 @@ class BootScene
     # 包含：调用 render_lock_band 渲染目标频段高亮带
     # -------------------------------------------------------------
     rect = s.slider_rect
-
-    # 滑槽背景
+    # 背景槽
     args.outputs.solids << {
       x: rect[:x],
       y: rect[:y],
@@ -317,44 +388,73 @@ class BootScene
       h: rect[:h],
       r: 30,
       g: 40,
-      b: 70
+      b: 60,
+      a: 200
     }
+
+    # 目标频率位置
+    target = s.frequency_target
+    target_norm = (target - MIN_FREQ) / (MAX_FREQ - MIN_FREQ).to_f
+    target_x = rect[:x] + rect[:w] * target_norm
 
     # 当前滑块位置
     knob_x = rect[:x] + rect[:w] * s.slider_value
-
-    args.outputs.solids << {
-      x: knob_x - 6,
-      y: rect[:y] - 4,
-      w: 12,
-      h: rect[:h] + 8,
+    knob = {
+      x: knob_x - 4,
+      y: rect[:y] - 6,
+      w: 8,
+      h: rect[:h] + 12,
       r: 200,
       g: 220,
       b: 255
     }
+    args.outputs.solids << knob
+
+    # 目标细线
+    args.outputs.lines << {
+      x: target_x,
+      y: rect[:y] - 8,
+      x2: target_x,
+      y2: rect[:y] + rect[:h] + 8,
+      r: 160,
+      g: 220,
+      b: 255,
+      a: 160
+    }
   end
 
-  def render_text(args, s)
-    # -------------------------------------------------------------
-    # 文本标签：辅助调试与玩家反馈（当前频率/目标/Δ/锁定状态）
-    # -------------------------------------------------------------
+  # UI：接近度条、数值提示、锁定提示
+  def render_proximity_ui(args, s)
     rect = s.slider_rect
 
     freq = s.wave_freq
     target = s.frequency_target
-    # 频率偏差（绝对值）：越小越接近目标
     freq_diff = (freq - target).abs
-    # 将偏差映射到 [0,1]：指数衰减，远离→接近 0，接近→接近 1
-    proximity = Math.exp(-freq_diff * 1.0)
-    if proximity < 0.0
-      proximity = 0.0
-    elsif proximity > 1.0
-      proximity = 1.0
+    proximity = compute_proximity(s)
+    proximity = 0.0 if proximity < 0.0
+    proximity = 1.0 if proximity > 1.0
+
+    locked = freq_diff <= lock_tolerance(args)
+    # Day 6: 关卡推进（A 版逻辑）
+    if locked
+      hint = level_hint(args)
+      args.outputs.labels << [
+        rect[:x],
+        rect[:y] + rect[:h] + 90,
+        (hint || "Signal locked. Press Enter to continue."),
+        0,
+        0,
+        200,
+        240,
+        255
+      ]
+      if args.inputs.keyboard.key_down.enter ||
+           args.inputs.keyboard.key_down.space
+        advance_level!(args)
+      end
     end
 
-    locked = freq_diff <= LOCK_TOLERANCE
-
-    # 当前频率显示（实时数值）
+    # 当前频率显示
     args.outputs.labels << [
       rect[:x],
       rect[:y] + rect[:h] + 34,
@@ -381,7 +481,6 @@ class BootScene
       g: 30,
       b: 55
     }
-
     # 绿色强度部分
     args.outputs.solids << {
       x: strength_x,
@@ -394,23 +493,59 @@ class BootScene
     }
 
     # 文字提示
-    label_text =
-      if locked
-        "Signal locked. Noise becomes gentle."
-      else
-        "Adjust frequency until signal stabilises..."
-      end
-
     args.outputs.labels << [
-      strength_x,
-      strength_y + 26,
-      label_text,
+      strength_x + strength_bar_w + 10,
+      strength_y + 5,
+      (locked ? "Signal locked ✔" : "Signal weak"),
       0,
       0,
-      180,
-      200,
-      220
+      (locked ? 120 : 200),
+      (locked ? 230 : 180),
+      (locked ? 120 : 150)
     ]
+  end
+
+  def render_lock_band(args, s)
+    rect = s.slider_rect
+
+    # 以 target_freq 为中心，按“容差”绘制半透明高亮带
+    target = s.frequency_target
+    target_norm = (target - MIN_FREQ) / (MAX_FREQ - MIN_FREQ).to_f
+    target_x = rect[:x] + rect[:w] * target_norm
+
+    # 说明：以 TARGET_FREQ 为中心，lock_tolerance(args) 为半宽，在滑块上画半透明带
+    tol_norm = lock_tolerance(args) / (MAX_FREQ - MIN_FREQ)
+    band_w = rect[:w] * (2 * tol_norm)
+    band_x = target_x - band_w * 0.5
+
+    # 透明度随接近度稍增
+    proximity = compute_proximity(s)
+    alpha = (60 + proximity * 80).to_i
+
+    # 高亮带（轻微呼吸动画）
+    pulse = (Math.sin(Kernel.tick_count / 30.0) * 0.5 + 0.5) * 20
+    args.outputs.solids << {
+      x: band_x,
+      y: rect[:y] - 6,
+      w: band_w,
+      h: rect[:h] + 12,
+      r: 100,
+      g: 200,
+      b: 220,
+      a: alpha + pulse.to_i
+    }
+
+    # 在目标中心画一条细的准星线
+    args.outputs.lines << {
+      x: target_x,
+      y: rect[:y] - 12,
+      x2: target_x,
+      y2: rect[:y] + rect[:h] + 12,
+      r: 180,
+      g: 220,
+      b: 255,
+      a: 160
+    }
   end
 end
 
@@ -426,6 +561,7 @@ def compute_proximity(s)
   proximity = 1.0 if proximity > 1.0
   proximity
 end
+
 def render_lock_band(args, s)
   # -------------------------------------------------------------
   # 目标频段高亮带（Lock Band）
@@ -471,4 +607,16 @@ def render_lock_band(args, s)
     b: 255,
     a: 160
   }
+end
+
+# Day 6：当锁定后推进到下一关，并刷新与关卡相关的状态
+def advance_level!(args)
+  args.state.level_index ||= 0
+  args.state.level_index += 1
+  args.state.level_index = 0 if args.state.level_index >= LEVELS.length
+
+  s = state(args)
+  s.frequency_target = target_freq(args).to_f
+  s.slider_value = 0.1
+  s.phase = 0.0
 end
