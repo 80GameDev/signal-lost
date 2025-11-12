@@ -104,12 +104,13 @@ class BootScene
   def tick(args)
     # -------------------------------------------------------------
     # 主循环：按帧驱动（DragonRuby 每帧调用）
-    # 步骤：初始化 → 处理输入 → 更新波形 → 更新音频 → 渲染
+    # 步骤：初始化 → 处理输入 → 更新波形 → 更新音频 → 更新关卡 → 渲染
     # -------------------------------------------------------------
     init_state(args) unless @initialized
     handle_input(args) # Day 2–3：键盘 + 滑块输入
     update_wave(args) # Day 2–3：根据频率更新波形动画参数
     update_audio(args) # Day 4：根据频率偏差调节噪声/信号音量
+    update_level_progress(args) # Day 7：根据频率锁定情况更新关卡状态
     render(args) # 渲染波形、UI 与调试文本
   end
 
@@ -132,6 +133,10 @@ class BootScene
     s.wave_color = { r: 190, g: 210, b: 230 }
     s.noise_gain = 0.5
     s.signal_gain = 0.0
+
+    # Day 7：关卡进度状态
+    s.locked_frames ||= 0
+    s.level_cleared = false if s.level_cleared.nil?
 
     # 调频滑块的矩形
     s.slider_rect ||= SLIDER_RECT.dup
@@ -205,6 +210,16 @@ class BootScene
     # 根据 slider_value 更新当前频率
     # 将 0~1 的 slider_value 映射为实际频率范围
     s.wave_freq = MIN_FREQ + s.slider_value * (MAX_FREQ - MIN_FREQ)
+
+    # Day 7：调试键，按 L 回到关卡 1（干涉波原型）
+    if kb.key_down.l
+      args.state.level_index = 0
+      s.frequency_target = target_freq(args).to_f
+      s.slider_value = 0.1
+      s.phase = 0.0
+      s.locked_frames = 0
+      s.level_cleared = false
+    end
   end
 
   # -------------------------------------------------------------
@@ -324,13 +339,68 @@ class BootScene
     args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 5, g: 10, b: 25 }
   end
 
+  # def render_wave(args, s)
+  #   # -------------------------------------------------------------
+  #   # 绘制波形：用多段线近似正弦曲线
+  #   # Day 5：离目标越近，抖动越小、亮度越高（“净化”效果）
+  #   # 实现：基础振幅 + 轻微随机扰动（随 proximity 衰减）
+  #   # -------------------------------------------------------------
+  #   # 接近度用于视觉“净化”
+  #   proximity = compute_proximity(s)
+
+  #   lines = []
+  #   x_start = 80
+  #   x_end = 1200
+  #   width = x_end - x_start
+  #   center_y = 420
+
+  #   # 振幅与随机抖动：越接近越稳定
+  #   base_amplitude = 56
+  #   # Day 5：接近时抖动收敛；远离时抖动明显
+  #   jitter_scale = (1.0 - proximity) * 12.0
+
+  #   samples = 220
+  #   amplitude = base_amplitude
+
+  #   (0..samples - 1).each do |i|
+  #     t1 = i.to_f / samples
+  #     t2 = (i + 1).to_f / samples
+
+  #     x1 = x_start + t1 * width
+  #     x2 = x_start + t2 * width
+
+  #     # 引入轻微随机抖动（只影响远离时的“噪波”感）
+  #     n1 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+  #     n2 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+
+  #     y1 =
+  #       center_y +
+  #         Math.sin(2 * Math::PI * (t1 * s.wave_freq + s.phase)) * amplitude + n1
+  #     y2 =
+  #       center_y +
+  #         Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude + n2
+
+  #     # 基础波线：颜色随接近度增亮
+  #     c = 160 + (95 * proximity).to_i # 160~255
+  #     lines << { x: x1, y: y1, x2: x2, y2: y2, r: c, g: c - 20, b: 255 }
+  #   end
+
+  #   args.outputs.lines << lines
+  # end
+
   def render_wave(args, s)
-    # -------------------------------------------------------------
-    # 绘制波形：用多段线近似正弦曲线
-    # Day 5：离目标越近，抖动越小、亮度越高（“净化”效果）
-    # 实现：基础振幅 + 轻微随机扰动（随 proximity 衰减）
-    # -------------------------------------------------------------
-    # 接近度用于视觉“净化”
+    ld = level_data(args)
+
+    # Day 7：关卡 1 使用干涉波原型渲染，其它暂时使用单波渲染
+    if ld && ld[:id] == 1
+      render_interference_wave(args, s)
+    else
+      render_single_wave(args, s)
+    end
+  end
+
+  # 原来的单波渲染逻辑，稍微包一层，供其它关卡复用
+  def render_single_wave(args, s)
     proximity = compute_proximity(s)
 
     lines = []
@@ -339,11 +409,8 @@ class BootScene
     width = x_end - x_start
     center_y = 420
 
-    # 振幅与随机抖动：越接近越稳定
     base_amplitude = 56
-    # Day 5：接近时抖动收敛；远离时抖动明显
     jitter_scale = (1.0 - proximity) * 12.0
-
     samples = 220
     amplitude = base_amplitude
 
@@ -354,7 +421,6 @@ class BootScene
       x1 = x_start + t1 * width
       x2 = x_start + t2 * width
 
-      # 引入轻微随机抖动（只影响远离时的“噪波”感）
       n1 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
       n2 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
 
@@ -365,12 +431,155 @@ class BootScene
         center_y +
           Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude + n2
 
-      # 基础波线：颜色随接近度增亮
       c = 160 + (95 * proximity).to_i # 160~255
       lines << { x: x1, y: y1, x2: x2, y2: y2, r: c, g: c - 20, b: 255 }
     end
 
     args.outputs.lines << lines
+  end
+
+  # Day 7：干涉波可视化（两条波 + 叠加波）
+  def render_interference_wave(args, s)
+    proximity = compute_proximity(s)
+
+    lines_carrier = []
+    lines_player = []
+    lines_combined = []
+
+    x_start = 80
+    x_end = 1200
+    width = x_end - x_start
+    center_y = 420
+
+    # 频率与相位
+    carrier_freq = s.frequency_target # 基准波：目标频率
+    player_freq = s.wave_freq # 玩家当前调到的频率
+
+    carrier_phase = s.phase
+    player_phase = s.phase + 0.25 # 稍微错一点相位，视觉上更容易看出两条不同的波
+
+    # 振幅和扰动：接近时叠加波更大、更平滑；远离时抖动更乱、振幅较低
+    base_amp_carrier = 40
+    base_amp_player = 40
+
+    # 叠加波的振幅随 proximity 放大，远离时接近抵消
+    combined_amp = 32 * (0.4 + proximity * 1.2) # 约 12.8 ~ 51.2
+
+    jitter_scale = (1.0 - proximity) * 10.0
+    samples = 220
+
+    (0..samples - 1).each do |i|
+      t1 = i.to_f / samples
+      t2 = (i + 1).to_f / samples
+
+      x1 = x_start + t1 * width
+      x2 = x_start + t2 * width
+
+      n1 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+      n2 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+
+      # 单独两条波
+      y1_carrier =
+        center_y +
+          Math.sin(2 * Math::PI * (t1 * carrier_freq + carrier_phase)) *
+            base_amp_carrier + n1
+      y2_carrier =
+        center_y +
+          Math.sin(2 * Math::PI * (t2 * carrier_freq + carrier_phase)) *
+            base_amp_carrier + n2
+
+      y1_player =
+        center_y +
+          Math.sin(2 * Math::PI * (t1 * player_freq + player_phase)) *
+            base_amp_player + n1
+      y2_player =
+        center_y +
+          Math.sin(2 * Math::PI * (t2 * player_freq + player_phase)) *
+            base_amp_player + n2
+
+      # 叠加波：简单相加再缩放
+      sum1 =
+        Math.sin(2 * Math::PI * (t1 * carrier_freq + carrier_phase)) +
+          Math.sin(2 * Math::PI * (t1 * player_freq + player_phase))
+      sum2 =
+        Math.sin(2 * Math::PI * (t2 * carrier_freq + carrier_phase)) +
+          Math.sin(2 * Math::PI * (t2 * player_freq + player_phase))
+
+      y1_combined = center_y + sum1 * combined_amp + n1 * 0.4
+      y2_combined = center_y + sum2 * combined_amp + n2 * 0.4
+
+      # 颜色：基准波偏蓝，玩家波偏洋红，叠加波更亮
+      lines_carrier << {
+        x: x1,
+        y: y1_carrier,
+        x2: x2,
+        y2: y2_carrier,
+        r: 80,
+        g: 180,
+        b: 255,
+        a: 180
+      }
+      lines_player << {
+        x: x1,
+        y: y1_player,
+        x2: x2,
+        y2: y2_player,
+        r: 230,
+        g: 110,
+        b: 220,
+        a: 180
+      }
+
+      c = 200 + (55 * proximity).to_i # 接近时更亮
+      lines_combined << {
+        x: x1,
+        y: y1_combined,
+        x2: x2,
+        y2: y2_combined,
+        r: c,
+        g: c,
+        b: 255,
+        a: 255
+      }
+    end
+
+    args.outputs.lines << lines_carrier
+    args.outputs.lines << lines_player
+    args.outputs.lines << lines_combined
+
+    # 简单文字标注
+    args.outputs.labels << [
+      x_start,
+      center_y + 110,
+      "Carrier (target)",
+      0,
+      0,
+      160,
+      200,
+      255
+    ]
+
+    args.outputs.labels << [
+      x_start,
+      center_y - 110,
+      "Your tuning",
+      0,
+      0,
+      230,
+      150,
+      230
+    ]
+
+    args.outputs.labels << [
+      x_start,
+      center_y + 140,
+      "Interference sum — becomes smooth & strong when frequencies match.",
+      0,
+      0,
+      210,
+      230,
+      255
+    ]
   end
 
   def render_slider(args, s)
@@ -434,22 +643,62 @@ class BootScene
     proximity = 0.0 if proximity < 0.0
     proximity = 1.0 if proximity > 1.0
 
+    # locked = freq_diff <= lock_tolerance(args)
+    # # Day 6: 关卡推进（A 版逻辑）
+    # if locked
+    #   hint = level_hint(args)
+    #   args.outputs.labels << [
+    #     rect[:x],
+    #     rect[:y] + rect[:h] + 90,
+    #     (hint || "Signal locked. Press Enter to continue."),
+    #     0,
+    #     0,
+    #     200,
+    #     240,
+    #     255
+    #   ]
+    #   if args.inputs.keyboard.key_down.enter ||
+    #        args.inputs.keyboard.key_down.space
+    #     advance_level!(args)
+    #   end
+    # end
     locked = freq_diff <= lock_tolerance(args)
-    # Day 6: 关卡推进（A 版逻辑）
+    frames_needed = success_hold_frames(args)
+
     if locked
       hint = level_hint(args)
+
+      if s.level_cleared
+        # 已经满足持续帧数要求：提示可以继续推进
+        text = hint || "Signal acquired. Press Enter to continue."
+        # text = "Signal acquired. Press Enter to continue."
+      else
+        # 尚未满足：显示“稳定中 + 百分比”
+        progress = (s.locked_frames.to_f / frames_needed.to_f)
+        progress = 0.0 if progress < 0.0
+        progress = 1.0 if progress > 1.0
+        percent = (progress * 100).to_i
+        text = hint || "Stabilizing signal... hold frequency (#{percent}%)"
+        # text = "Stabilizing signal... hold frequency (#{percent}%)"
+      end
+
       args.outputs.labels << [
         rect[:x],
         rect[:y] + rect[:h] + 90,
-        (hint || "Signal locked. Press Enter to continue."),
+        text,
         0,
         0,
         200,
         240,
         255
       ]
-      if args.inputs.keyboard.key_down.enter ||
-           args.inputs.keyboard.key_down.space
+
+      # 只有在真正"level_cleared" 后，Enter/Space 才推进关卡
+      if s.level_cleared &&
+           (
+             args.inputs.keyboard.key_down.enter ||
+               args.inputs.keyboard.key_down.space
+           )
         advance_level!(args)
       end
     end
@@ -549,19 +798,6 @@ class BootScene
   end
 end
 
-# --- Merged additions from boot_scene1.rb ---
-def compute_proximity(s)
-  # -------------------------------------------------------------
-  # 工具函数：将当前频差映射为 [0, 1] 的接近度
-  # 映射方式：proximity = exp(-|freq - target| * k)，k=1.0
-  # -------------------------------------------------------------
-  freq_diff = (s.wave_freq - s.frequency_target).abs
-  proximity = Math.exp(-freq_diff * 1.0)
-  proximity = 0.0 if proximity < 0.0
-  proximity = 1.0 if proximity > 1.0
-  proximity
-end
-
 def render_lock_band(args, s)
   # -------------------------------------------------------------
   # 目标频段高亮带（Lock Band）
@@ -610,6 +846,7 @@ def render_lock_band(args, s)
 end
 
 # Day 6：当锁定后推进到下一关，并刷新与关卡相关的状态
+# 当锁定后推进到下一关，并刷新与关卡相关的状态
 def advance_level!(args)
   args.state.level_index ||= 0
   args.state.level_index += 1
@@ -619,4 +856,57 @@ def advance_level!(args)
   s.frequency_target = target_freq(args).to_f
   s.slider_value = 0.1
   s.phase = 0.0
+
+  # Day 7：重置关卡进度
+  s.locked_frames = 0
+  s.level_cleared = false
+end
+
+# --- 小工具 ---
+def compute_proximity(s)
+  # -------------------------------------------------------------
+  # 工具函数：将当前频差映射为 [0, 1] 的接近度
+  # 映射方式：proximity = exp(-|freq - target| * k)，k=1.0
+  # -------------------------------------------------------------
+  freq_diff = (s.wave_freq - s.frequency_target).abs
+  proximity = Math.exp(-freq_diff * 1.0)
+  proximity = 0.0 if proximity < 0.0
+  proximity = 1.0 if proximity > 1.0
+  proximity
+end
+
+def success_hold_frames(args)
+  if (ld = level_data(args)) && ld[:success_hold_frames]
+    ld[:success_hold_frames].to_i
+  else
+    60
+  end
+end
+
+def update_level_progress(args)
+  s = state(args)
+
+  freq_diff = (s.wave_freq - s.frequency_target).abs
+  tol = lock_tolerance(args)
+  frames_needed = success_hold_frames(args)
+
+  # 在锁定区内就累积帧数，离开就清零
+  if freq_diff <= tol
+    s.locked_frames ||= 0
+    s.locked_frames += 1
+  else
+    s.locked_frames = 0
+  end
+
+  # 达到持续帧数要求后判定“本关已解”
+  unless s.level_cleared
+    if s.locked_frames >= frames_needed
+      s.level_cleared = true
+
+      # Day 7：对关卡 1 触发全局标记
+      if (ld = level_data(args)) && ld[:id] == 1
+        args.state.level1_cleared = true
+      end
+    end
+  end
 end
