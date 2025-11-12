@@ -3,8 +3,13 @@
 # 项目名称：《Signal Lost / 孤波》
 #
 # 阶段说明：
-#   Day 1–3 主要目标是建立最基本的“场景管理系统（SceneManager）”
-#   并接入启动场景（BootScene），实现游戏循环的最小可运行单元。
+#   Day 1–3:
+#     - 建立最基本的“场景管理系统（SceneManager）”
+#     - 接入启动场景（BootScene），实现游戏循环的最小可运行单元
+#     - 在 BootScene 中渲染基础波形与调频滑块
+#   Day 4:
+#     - 在 BootScene 中加入简易音频系统
+#     - 根据当前频率与目标频率的偏差，动态调整噪声和信号音量
 #
 # DragonRuby 框架机制简介：
 #   - DragonRuby 游戏的主循环函数必须命名为 tick(args)
@@ -14,35 +19,42 @@
 #
 # 本文件职责：
 #   - 引入 BootScene（启动场景）
-#   - 定义 SceneManager（场景管理器）
-#   - 提供 tick(args) 全局入口，驱动整个游戏逻辑
+#   - 实现 SceneManager（场景管理器）
+#   - 定义 DragonRuby 全局 tick(args) 并把控制权交给当前场景
 # ================================================================
 
 # ---------------------------------------------------------------
-# 一、引入启动场景类
+# 一、引入各个场景
 # ---------------------------------------------------------------
-# $gtk.require 是 DragonRuby 的专用加载方法，
-# 类似 Ruby 的 require，但支持热加载（Hot Reload）。
-# 当文件被修改后，游戏引擎会自动重新加载它。
-$gtk.require "app/scenes/boot_scene.rb"
+require "app/scenes/boot_scene.rb"
 
 # ---------------------------------------------------------------
-# 二、场景管理器（SceneManager）
+# 二、场景管理器：负责当前场景的切换与调度
 # ---------------------------------------------------------------
-# 用于在多个游戏场景之间切换。
-# 当前版本只包含一个 BootScene（启动场景），
-# 未来可扩展为菜单场景、无线电调谐场景、剧情场景等。
 class SceneManager
+  attr_reader :current_scene_name, :current_scene
+
   def initialize
-    # 初始化时加载启动场景
-    # 将当前场景设置为 BootScene 实例
+    # 目前只需要一个场景：BootScene
+    @current_scene_name = :boot
     @current_scene = BootScene.new
   end
 
-  # 每帧更新
-  # 该方法会被全局 tick(args) 调用，
-  # 其作用是将游戏循环的控制权交给当前场景对象。
+  # 可选：对外暴露一个切换场景的接口
+  def switch_to(scene_name)
+    case scene_name
+    when :boot
+      @current_scene = BootScene.new
+      @current_scene_name = :boot
+    else
+      # 将来可以在这里添加更多场景
+      puts "[SceneManager] unknown scene: #{scene_name}"
+    end
+  end
+
+  # 每一帧由 main.rb 调用
   def tick(args)
+    # 把 args 传入当前场景，由场景自行处理输入、更新和渲染
     @current_scene.tick(args)
   end
 end

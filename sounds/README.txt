@@ -6,3 +6,6 @@
 - ocean_loop.wav    （潮水环境音）
 
 后续 Day 4/16 会在 main.rb 或独立 audio_controller 中加载这些音频。
+
+Noise effects generated using Audacity (GPLv2, © The Audacity Team).
+Beep effects geenrated using jsfxr (https://github.com/chr15m/jsfxr)

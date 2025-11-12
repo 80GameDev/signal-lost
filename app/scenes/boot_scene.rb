@@ -3,251 +3,343 @@
 # 场景名称：BootScene（启动场景 / 波形原型）
 #
 # 项目阶段说明：
-#   Day 2: 实现基础波形（正弦波）渲染，并支持 ← → 键调节频率。
-#   Day 3: 增加交互式“调频滑块”（frequency slider），
-#          允许玩家通过鼠标点击改变波形频率。
+#   Day 2:
+#     - 实现基础波形（正弦波）渲染，并支持 ← → 键调节频率
+#   Day 3:
+#     - 增加交互式“调频滑块”（frequency slider），允许玩家通过鼠标点击改变波形频率
+#   Day 4:
+#     - 增加音频反馈：持续播放带噪声的无线电声，根据当前频率与目标频率的偏差，
+#       动态调整噪声与“信号音”的音量，模拟“接近真频”的感觉
 #
 # 主要目标：
-#   - 展示动态“无线电波”视觉效果；
-#   - 实现简单的信号调频机制；
-#   - 为后续剧情或解谜玩法提供基础的波形调控系统。
+#   - 展示动态“无线电波”视觉效果
+#   - 实现简单的信号调频机制（键盘 + 滑块）
+#   - 为后续关卡与剧情提供基础的音画反馈系统
 # ================================================================
 
 class BootScene
-  # tick(args) 是 DragonRuby 中的主循环入口，
-  # 每帧都会被自动调用（约 60 FPS）
+  # 一些简单的常量，方便统一调节
+  SLIDER_RECT = { x: 160, y: 120, w: 960, h: 24 }.freeze
+
+  # 频率范围（只是视觉/听觉上的抽象，不是物理真实值）
+  MIN_FREQ = 0.5
+  MAX_FREQ = 8.0
+
+  # 目标频率（Day 4 先固定为一个值，后面可以做成每关不同）
+  TARGET_FREQ = 4.2
+
+  # 允许认为“非常接近”的频差（用于 UI 提示）
+  LOCK_TOLERANCE = 0.08
+
+  def initialize
+    @initialized = false
+  end
+
+  # DragonRuby 每帧会调用当前场景的 tick(args)
   def tick(args)
-    defaults(args) # 初始化状态（首次进入或重置时）
-    handle_input(args) # 处理玩家输入（键盘/鼠标）
-    update_derived_state(args) # 更新衍生状态（例如目标频率同步）
-    render(args) # 绘制所有图像和 UI
+    init_state(args) unless @initialized
+    handle_input(args) # Day 2–3：键盘 + 滑块输入
+    update_wave(args) # Day 2–3：根据频率更新波形动画参数
+    update_audio(args) # Day 4：根据频率偏差调节噪声/信号音量
+    render(args) # 渲染波形、UI 与调试文本
   end
 
-  # ---------------------------------------------------------------
-  # 一、状态初始化（defaults）
-  # ---------------------------------------------------------------
-  def defaults(args)
-    s = args.state # 访问全局状态对象（DragonRuby 内置）
+  # -------------------------------------------------------------
+  # 初始化：只在第一次进入场景时执行一次
+  # -------------------------------------------------------------
+  def init_state(args)
+    s = state(args)
 
-    # 设置频率范围（允许的最小和最大值）
-    s.min_freq ||= 1.0
-    s.max_freq ||= 8.0
+    # 逻辑频率参数
+    s.wave_freq ||= 2.0 # 当前波形频率
+    s.frequency_target ||= TARGET_FREQ.to_f # 目标频率
+    s.slider_value ||= 0.35 # 0.0~1.0 之间的归一化值
+    s.phase ||= 0.0 # 用于波形动画的相位
 
-    # 当前正弦波的频率（主要物理参数）
-    s.wave_freq ||= 3.0
+    # 调频滑块的矩形
+    s.slider_rect ||= SLIDER_RECT.dup
 
-    # Day 3: frequency_target 是逻辑层的“目标频率”，
-    # 可被其他系统（比如调谐、解谜模块）读取。
-    s.frequency_target ||= s.wave_freq
+    # 输入状态（避免一次按键重复触发）
+    s.last_mouse_down ||= false
 
-    # 滑块的屏幕区域定义（矩形坐标）
-    # x, y 为左下角坐标；w, h 为宽高。
-    s.slider_rect ||= { x: 200, y: 80, w: 880, h: 24 }
+    # Day 4：音频初始化
+    ensure_audio_started(args)
 
-    # slider_value 表示滑块的“归一化位置”（0.0 ~ 1.0）
-    # 对应 min_freq → max_freq 的线性映射。
-    if s.slider_value.nil?
-      range = (s.max_freq - s.min_freq)
-      range = 1.0 if range.zero? # 防止除以 0
-      s.slider_value = (s.wave_freq - s.min_freq) / range
-    end
+    @initialized = true
   end
 
-  # ---------------------------------------------------------------
-  # 二、输入处理（handle_input）
-  # ---------------------------------------------------------------
+  # 一个小工具方法，统一访问本场景在 args.state 中的存储
+  def state(args)
+    args.state.boot_scene ||= args.state.new_entity(:boot_scene)
+  end
+
+  # -------------------------------------------------------------
+  # 输入处理：键盘 ← → 微调 + 鼠标点击滑块
+  # -------------------------------------------------------------
   def handle_input(args)
-    handle_keyboard_input(args) # 键盘 ← → 调节
-    handle_slider_input(args) # 鼠标点击滑块调节
-  end
+    s = state(args)
+    kb = args.inputs.keyboard
+    ms = args.inputs.mouse
 
-  # 键盘输入逻辑（Day 2 版本兼容）
-  def handle_keyboard_input(args)
-    s = args.state
-    step = 0.05 # 每次调整的步长
-
-    # 通过方向键改变频率
-    if args.inputs.left
-      s.wave_freq -= step
-    elsif args.inputs.right
-      s.wave_freq += step
+    # 1）键盘左右键：微调 slider_value
+    #    这里假设 60fps，一秒钟大概可以移动 0.5 的 slider 区间
+    if kb.left
+      s.slider_value -= 0.5 / 60.0
+    elsif kb.right
+      s.slider_value += 0.5 / 60.0
     end
 
-    # 限制在 [min_freq, max_freq] 范围内
-    s.wave_freq = s.min_freq if s.wave_freq < s.min_freq
-    s.wave_freq = s.max_freq if s.wave_freq > s.max_freq
+    # clamp 到 [0, 1]
+    if s.slider_value < 0.0
+      s.slider_value = 0.0
+    elsif s.slider_value > 1.0
+      s.slider_value = 1.0
+    end
 
-    # 同步 slider_value，使滑块位置反映最新频率
-    range = (s.max_freq - s.min_freq)
-    range = 1.0 if range.zero?
-    s.slider_value = (s.wave_freq - s.min_freq) / range
-  end
-
-  # 鼠标点击滑块：根据点击位置更新频率
-  def handle_slider_input(args)
-    s = args.state
+    # 2）鼠标点击滑块：直接跳到鼠标所在位置
     rect = s.slider_rect
-    click = args.inputs.mouse.click
-    return unless click # 没有点击时直接返回
+    rect_array = [rect[:x], rect[:y], rect[:w], rect[:h]]
 
-    # DragonRuby 内置方法：判断鼠标点击是否落在矩形区域内
-    if click.point.inside_rect?(rect)
-      # 计算点击点相对滑轨左端的距离
-      rel_x = click.point.x - rect[:x]
-      rel_x = 0 if rel_x < 0
-      rel_x = rect[:w] if rel_x > rect[:w]
+    mouse_down = ms.button_left
+    just_clicked = mouse_down && !s.last_mouse_down
 
-      # 将点击位置映射为归一化比例（0.0 ~ 1.0）
-      s.slider_value = rel_x / rect[:w].to_f
+    if just_clicked && [ms.x, ms.y].inside_rect?(rect_array)
+      relative_x = (ms.x - rect[:x]) / rect[:w].to_f
 
-      # 将比例反映为真实频率值
-      range = (s.max_freq - s.min_freq)
-      range = 1.0 if range.zero?
-      s.wave_freq = s.min_freq + s.slider_value * range
+      # 同样 clamp 到 [0, 1]
+      if relative_x < 0.0
+        relative_x = 0.0
+      elsif relative_x > 1.0
+        relative_x = 1.0
+      end
+
+      s.slider_value = relative_x
+    end
+
+    s.last_mouse_down = mouse_down
+
+    # 根据 slider_value 更新当前频率
+    s.wave_freq = MIN_FREQ + s.slider_value * (MAX_FREQ - MIN_FREQ)
+  end
+
+  # -------------------------------------------------------------
+  # 更新波形动画（主要是相位）
+  # -------------------------------------------------------------
+  def update_wave(args)
+    s = state(args)
+    # 简单做一个基于时间的相位偏移，让波形“向前流动”
+    # Kernel.tick_count 是游戏运行到现在的总帧数
+    s.phase = Kernel.tick_count / 60.0 * 0.6
+  end
+
+  # -------------------------------------------------------------
+  # Day 4：音频逻辑
+  #
+  # 我们使用两个持续播放的通道：
+  #   - :radio_noise  —— 无线电噪声（radio_static.wav）
+  #   - :radio_tone   —— 信号音/蜂鸣（shortwave_beep.wav）
+  #
+  # 根据当前频率与目标频率的差值：
+  #   - 越接近目标频率：噪声逐渐变小，信号音变大
+  #   - 远离目标频率：噪声占主导，信号音几乎听不到
+  # -------------------------------------------------------------
+  def ensure_audio_started(args)
+    # 只需要在第一次进入场景时设置一次即可
+    # radio_static.wav 建议是连续的“沙沙”噪声，放在 app/audio/ 下
+    args.audio[:radio_noise] ||= {
+      input: "sounds/radio_static_16bit.wav",
+      looping: true,
+      gain: 0.9
+    }
+
+    # shortwave_beep.wav 建议是有一点音高的短波哔声，可以循环播放
+    args.audio[:radio_tone] ||= {
+      input: "sounds/shortwave_beep_16bit.wav",
+      looping: true,
+      gain: 0.0 # 初始时几乎听不到信号
+    }
+  end
+
+  def update_audio(args)
+    s = state(args)
+
+    # 频率偏差（绝对值）
+    freq_diff = (s.wave_freq - s.frequency_target).abs
+
+    # 用一个平滑的函数把 freq_diff 映射到 [0, 1] 的“接近度”
+    # 这里使用简单的指数衰减：diff 越大，接近度越接近 0
+    proximity = Math.exp(-freq_diff * 1.0)
+    # 手动 clamp 到 [0, 1]，避免数值溢出
+    if proximity < 0.0
+      proximity = 0.0
+    elsif proximity > 1.0
+      proximity = 1.0
+    end
+
+    # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
+    noise_gain = 0.3 + (1.0 - proximity) * 0.7
+    # 信号音量：接近目标频率时接近 1
+    tone_gain = proximity
+
+    args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
+
+    if args.audio[:radio_tone]
+      args.audio[:radio_tone].gain = tone_gain
+      # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
+      # 比如：
+      #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
+      # 目前先保持 1.0，后续关卡需要时再开启
     end
   end
 
-  # ---------------------------------------------------------------
-  # 三、衍生状态同步
-  # ---------------------------------------------------------------
-  # 用于保证 UI 和物理逻辑数据一致，
-  # 例如：将 wave_freq 推送到 frequency_target。
-  def update_derived_state(args)
-    s = args.state
-    s.frequency_target = s.wave_freq
-  end
-
-  # ---------------------------------------------------------------
-  # 四、渲染系统（render）
-  # ---------------------------------------------------------------
+  # -------------------------------------------------------------
+  # 渲染：波形 + 滑块 + 文本 UI
+  # -------------------------------------------------------------
   def render(args)
-    render_background(args) # 背景与标题
-    render_wave(args) # 主波形
-    render_ui(args) # 滑块与文字提示
+    s = state(args)
+
+    render_background(args)
+    render_wave(args, s)
+    render_slider(args, s)
+    render_text(args, s)
   end
 
-  # 背景渲染（深色基调 + 居中标题）
   def render_background(args)
-    # 深蓝背景（RGB 6,12,24）
-    args.outputs.solids << [0, 0, 1280, 720, 6, 12, 24]
-
-    # 居中标题标签
-    args.outputs.labels << [
-      640,
-      700, # 坐标（中心上方）
-      "Signal Lost / 孤波  -  Boot Prototype", # 文本内容
-      1,
-      0, # 对齐方式与字号枚举
-      200,
-      220,
-      255 # 字体颜色（淡蓝）
-    ]
+    # 简单深蓝色背景，后续可以替换为图像或更复杂的场景
+    args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 5, g: 10, b: 25 }
   end
 
-  # 波形渲染逻辑（核心视觉效果）
-  def render_wave(args)
-    s = args.state
-    lines = args.outputs.lines # DragonRuby 的线段输出集合
+  def render_wave(args, s)
+    lines = []
 
-    # 初始化波相位，用于让波形“流动”起来
-    s.wave_phase ||= 0.0
-    s.wave_phase += s.wave_speed || 0.08
+    # 波形绘制区域（左右留一点边距）
+    x_start = 80
+    x_end = 1200
+    width = x_end - x_start
 
-    # 屏幕参数
-    screen_w = 1280
-    center_y = 360 # 波形中心线
-    amplitude = 80 # 波幅
-    step_x = 4 # 每个线段的水平长度（越小越平滑）
+    center_y = 420
+    amplitude = 80
+    samples = 240
 
-    # 波形颜色：亮蓝色
-    color = [120, 200, 255, 255]
+    (0...(samples - 1)).each do |i|
+      t1 = i.to_f / samples
+      t2 = (i + 1).to_f / samples
 
-    x = 0
-    while x < screen_w
-      # 计算相邻两点的相位值
-      rad1 = s.wave_phase + x * s.wave_freq * 0.01
-      rad2 = s.wave_phase + (x + step_x) * s.wave_freq * 0.01
+      x1 = x_start + t1 * width
+      x2 = x_start + t2 * width
 
-      # 根据正弦函数计算纵坐标
-      y1 = center_y + Math.sin(rad1) * amplitude
-      y2 = center_y + Math.sin(rad2) * amplitude
+      # 波形：正弦
+      y1 =
+        center_y +
+          Math.sin(2 * Math::PI * (t1 * s.wave_freq + s.phase)) * amplitude
+      y2 =
+        center_y +
+          Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude
 
-      # 绘制线段（从 [x, y1] 到 [x+step_x, y2]）
-      lines << [x, y1, x + step_x, y2, *color]
-      x += step_x
+      lines << { x: x1, y: y1, x2: x2, y2: y2, r: 160, g: 210, b: 255 }
     end
 
-    # 辅助中线（便于观察波动）
-    args.outputs.lines << [0, center_y, screen_w, center_y, 40, 80, 120, 180]
+    args.outputs.lines << lines
   end
 
-  # Day 3: UI 渲染，包括滑轨、滑块和文本提示
-  def render_ui(args)
-    s = args.state
+  def render_slider(args, s)
     rect = s.slider_rect
 
-    # --- 绘制滑轨 ---
-    args.outputs.solids << [
-      rect[:x],
-      rect[:y],
-      rect[:w],
-      rect[:h],
-      20,
-      30,
-      50,
-      220 # 深蓝半透明
-    ]
+    # 滑槽背景
+    args.outputs.solids << {
+      x: rect[:x],
+      y: rect[:y],
+      w: rect[:w],
+      h: rect[:h],
+      r: 30,
+      g: 40,
+      b: 70
+    }
 
-    args.outputs.borders << [
-      rect[:x],
-      rect[:y],
-      rect[:w],
-      rect[:h],
-      180,
-      200,
-      230,
-      255 # 浅蓝描边
-    ]
+    # 当前滑块位置
+    knob_x = rect[:x] + rect[:w] * s.slider_value
 
-    # --- 绘制滑块 ---
-    handle_size = rect[:h] * 1.8
-    handle_center_x = rect[:x] + s.slider_value * rect[:w]
-    handle_center_y = rect[:y] + rect[:h] / 2
+    args.outputs.solids << {
+      x: knob_x - 6,
+      y: rect[:y] - 4,
+      w: 12,
+      h: rect[:h] + 8,
+      r: 200,
+      g: 220,
+      b: 255
+    }
+  end
 
-    args.outputs.solids << [
-      handle_center_x - handle_size / 2,
-      handle_center_y - handle_size / 2,
-      handle_size,
-      handle_size,
-      220,
-      240,
-      255,
-      255 # 亮色滑块
-    ]
+  def render_text(args, s)
+    rect = s.slider_rect
 
-    # --- 文本提示 ---
-    # 操作提示（键盘 + 鼠标）
-    args.outputs.labels << [
-      rect[:x],
-      rect[:y] + rect[:h] + 40,
-      "← → 调节频率 / Click 滑块调频",
-      0,
-      0,
-      200,
-      220,
-      255
-    ]
+    freq = s.wave_freq
+    target = s.frequency_target
+    freq_diff = (freq - target).abs
+    proximity = Math.exp(-freq_diff * 1.0)
+    if proximity < 0.0
+      proximity = 0.0
+    elsif proximity > 1.0
+      proximity = 1.0
+    end
+    locked = freq_diff <= LOCK_TOLERANCE
 
     # 当前频率显示（实时数值）
     args.outputs.labels << [
       rect[:x],
-      rect[:y] + rect[:h] + 20,
-      "Current freq: #{s.wave_freq.round(2)}  (target: #{s.frequency_target.round(2)})",
+      rect[:y] + rect[:h] + 34,
+      "Current freq: #{freq.round(2)}   Target: #{target.round(2)}   Δ = #{freq_diff.round(3)}",
       0,
       0,
       190,
       210,
       230
+    ]
+
+    # 信号强度条
+    strength_bar_w = 260
+    strength_x = rect[:x]
+    strength_y = rect[:y] + rect[:h] + 70
+
+    # 背景条
+    args.outputs.solids << {
+      x: strength_x,
+      y: strength_y,
+      w: strength_bar_w,
+      h: 14,
+      r: 25,
+      g: 30,
+      b: 55
+    }
+
+    # 绿色强度部分
+    args.outputs.solids << {
+      x: strength_x,
+      y: strength_y,
+      w: strength_bar_w * proximity,
+      h: 14,
+      r: 80,
+      g: 200,
+      b: 140
+    }
+
+    # 文字提示
+    label_text =
+      if locked
+        "Signal locked. Noise becomes gentle."
+      else
+        "Adjust frequency until signal stabilises..."
+      end
+
+    args.outputs.labels << [
+      strength_x,
+      strength_y + 26,
+      label_text,
+      0,
+      0,
+      180,
+      200,
+      220
     ]
   end
 end
