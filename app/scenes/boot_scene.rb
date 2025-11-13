@@ -96,6 +96,32 @@ class BootScene
   # 允许认为“非常接近”的频差（用于 UI 提示）
   LOCK_TOLERANCE = 0.08
 
+  # --- DAY 8 CHANGE START: resonance level ---
+  # 声音资源常量（集中声明，便于你后续对照修改）
+  SND_NOISE_DEFAULT = "sounds/radio_static_16bit.wav"
+  SND_TONE_DEFAULT = "sounds/shortwave_beep.wav"
+  SND_NOISE_RESO = "sounds/resonance_base.wav" # 如文件名不同，改这里即可
+  SND_TONE_RESO = "sounds/resonance_clear.wav" # 如文件名不同，改这里即可
+
+  def level_type(args)
+    (
+      begin
+        level_data(args)[:type]
+      rescue StandardError
+        nil
+      end
+    ) || :interference
+  end
+
+  def resonance_params(args)
+    ld = level_data(args) || {}
+    {
+      glow_threshold: (ld[:glow_threshold] || 0.92).to_f,
+      amp_gain_max: (ld[:amp_gain_max] || 2.2).to_f
+    }
+  end
+  # --- DAY 8 CHANGE END ---
+
   def initialize
     @initialized = false
   end
@@ -252,68 +278,122 @@ class BootScene
   #   - 越接近目标频率：噪声逐渐变小，信号音变大
   #   - 远离目标频率：噪声占主导，信号音几乎听不到
   # -------------------------------------------------------------
+  # def ensure_audio_started(args)
+  #   # -------------------------------------------------------------
+  #   # 音频：懒加载与循环播放
+  #   # 包含两条轨：radio_noise（噪声）与 radio_tone（信号音）
+  #   # 只需在首次进入场景时启动，之后每帧仅更新 gain
+  #   # -------------------------------------------------------------
+  #   # 只需要在第一次进入场景时设置一次即可
+  #   # radio_static.wav 建议是连续的“沙沙”噪声，放在 app/audio/ 下
+  #   args.audio[:radio_noise] ||= {
+  #     input: "sounds/radio_static_16bit.wav",
+  #     looping: true,
+  #     gain: 0.9
+  #   }
+
+  #   # shortwave_beep.wav 建议是有一点音高的短波哔声，可以循环播放
+  #   args.audio[:radio_tone] ||= {
+  #     input: "sounds/shortwave_beep_16bit.wav",
+  #     looping: true,
+  #     gain: 0.0 # 初始时几乎听不到信号
+  #   }
+  # end
+  # --- DAY 8 CHANGE START: resonance level ---
   def ensure_audio_started(args)
-    # -------------------------------------------------------------
-    # 音频：懒加载与循环播放
-    # 包含两条轨：radio_noise（噪声）与 radio_tone（信号音）
-    # 只需在首次进入场景时启动，之后每帧仅更新 gain
-    # -------------------------------------------------------------
-    # 只需要在第一次进入场景时设置一次即可
-    # radio_static.wav 建议是连续的“沙沙”噪声，放在 app/audio/ 下
-    args.audio[:radio_noise] ||= {
-      input: "sounds/radio_static_16bit.wav",
-      looping: true,
-      gain: 0.9
-    }
+    # 根据关卡类型与关卡自定义字段选择音频文件
+    ld = level_data(args) || {}
+    t = level_type(args)
 
-    # shortwave_beep.wav 建议是有一点音高的短波哔声，可以循环播放
-    args.audio[:radio_tone] ||= {
-      input: "sounds/shortwave_beep_16bit.wav",
-      looping: true,
-      gain: 0.0 # 初始时几乎听不到信号
-    }
+    desired_noise =
+      ld[:noise_file] || (t == :resonance ? SND_NOISE_RESO : SND_NOISE_DEFAULT)
+    desired_tone =
+      ld[:tone_file] || (t == :resonance ? SND_TONE_RESO : SND_TONE_DEFAULT)
+
+    # 如果还没建，或文件与期望不一致，则（重新）设置
+    if !args.audio[:radio_noise] ||
+         args.audio[:radio_noise].input != desired_noise
+      args.audio[:radio_noise] = {
+        input: desired_noise,
+        looping: true,
+        gain: 0.9
+      }
+    end
+
+    if !args.audio[:radio_tone] || args.audio[:radio_tone].input != desired_tone
+      args.audio[:radio_tone] = {
+        input: desired_tone,
+        looping: true,
+        gain: 0.0,
+        pitch: 1.0
+      }
+    end
   end
+  # --- DAY 8 CHANGE END ---
 
+  # def update_audio(args)
+  #   # -------------------------------------------------------------
+  #   # 根据频率偏差调节音量（Day 4）
+  #   # 接近目标频率：噪声减小、信号音增大；远离则相反
+  #   # 映射：freq_diff → proximity ∈ [0,1]（指数衰减）
+  #   # -------------------------------------------------------------
+  #   s = state(args)
+
+  #   proximity = compute_proximity(s)
+
+  #   # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
+  #   noise_gain = 0.3 + (1.0 - proximity) * 0.7
+  #   # 信号音量：接近目标频率时接近 1
+  #   tone_gain = proximity
+
+  #   args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
+
+  #   if args.audio[:radio_tone]
+  #     args.audio[:radio_tone].gain = tone_gain
+  #     # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
+  #     # 比如：
+  #     #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
+  #     # 目前先保持 1.0，后续关卡需要时再开启
+  #   end
+
+  #   # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
+  #   noise_gain = 0.3 + (1.0 - proximity) * 0.7
+  #   # 信号音量：接近目标频率时接近 1
+  #   tone_gain = proximity
+
+  #   args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
+
+  #   if args.audio[:radio_tone]
+  #     args.audio[:radio_tone].gain = tone_gain
+  #     # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
+  #     # 比如：
+  #     #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
+  #     # 目前先保持 1.0，后续关卡需要时再开启
+  #   end
+  # end
+  # --- DAY 8 CHANGE START: resonance level ---
   def update_audio(args)
-    # -------------------------------------------------------------
-    # 根据频率偏差调节音量（Day 4）
-    # 接近目标频率：噪声减小、信号音增大；远离则相反
-    # 映射：freq_diff → proximity ∈ [0,1]（指数衰减）
-    # -------------------------------------------------------------
     s = state(args)
-
     proximity = compute_proximity(s)
 
-    # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
-    noise_gain = 0.3 + (1.0 - proximity) * 0.7
-    # 信号音量：接近目标频率时接近 1
-    tone_gain = proximity
-
-    args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
-
-    if args.audio[:radio_tone]
-      args.audio[:radio_tone].gain = tone_gain
-      # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
-      # 比如：
-      #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
-      # 目前先保持 1.0，后续关卡需要时再开启
+    if level_type(args) == :resonance
+      # 共振：信号更清晰、噪声更快收敛
+      tone_gain = 0.15 + 0.85 * (proximity**2)
+      noise_gain = 0.15 + 0.85 * (1.0 - proximity**2)
+      # 可选：让音调也随接近度略微上扬
+      args.audio[:radio_tone].pitch = 0.9 + 0.2 * proximity if args.audio[
+        :radio_tone
+      ]
+    else
+      # 其它关卡沿用 Day 4 的默认曲线
+      tone_gain = proximity
+      noise_gain = 0.3 + (1.0 - proximity) * 0.7
     end
 
-    # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
-    noise_gain = 0.3 + (1.0 - proximity) * 0.7
-    # 信号音量：接近目标频率时接近 1
-    tone_gain = proximity
-
+    args.audio[:radio_tone].gain = tone_gain if args.audio[:radio_tone]
     args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
-
-    if args.audio[:radio_tone]
-      args.audio[:radio_tone].gain = tone_gain
-      # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
-      # 比如：
-      #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
-      # 目前先保持 1.0，后续关卡需要时再开启
-    end
   end
+  # --- DAY 8 CHANGE END ---
 
   # -------------------------------------------------------------
   # 渲染：波形 + 滑块 + 文本 UI
@@ -388,16 +468,30 @@ class BootScene
   #   args.outputs.lines << lines
   # end
 
+  # def render_wave(args, s)
+  #   ld = level_data(args)
+
+  # Day 7：关卡 1 使用干涉波原型渲染，其它暂时使用单波渲染
+  #   if ld && ld[:id] == 1
+  #     render_interference_wave(args, s)
+  #   else
+  #     render_single_wave(args, s)
+  #   end
+  # end
+  # --- DAY 8 CHANGE START: resonance level ---
   def render_wave(args, s)
     ld = level_data(args)
 
-    # Day 7：关卡 1 使用干涉波原型渲染，其它暂时使用单波渲染
-    if ld && ld[:id] == 1
+    case (ld && ld[:type])
+    when :interference
       render_interference_wave(args, s)
+    when :resonance
+      render_resonance_wave(args, s)
     else
       render_single_wave(args, s)
     end
   end
+  # --- DAY 8 CHANGE END ---
 
   # 原来的单波渲染逻辑，稍微包一层，供其它关卡复用
   def render_single_wave(args, s)
@@ -581,6 +675,73 @@ class BootScene
       255
     ]
   end
+  # --- DAY 8 CHANGE START: resonance level ---
+  # 共振关渲染：接近目标频率时振幅放大 + 发光/halo
+  def render_resonance_wave(args, s)
+    p = compute_proximity(s)
+    params = resonance_params(args)
+    glow_threshold = params[:glow_threshold]
+    amp_gain_max = params[:amp_gain_max]
+
+    lines_main = []
+    lines_halo = []
+
+    x_start = 80
+    x_end = 1200
+    width = x_end - x_start
+    center_y = 420
+
+    base_amplitude = 56
+    # 二次缓入，避免一上来太猛
+    amp_scale = 1.0 + (amp_gain_max - 1.0) * (p * p)
+    amplitude = base_amplitude * amp_scale
+
+    p # 接近时抖动更小（让波形更“稳”），远离时抖动更大
+    jitter_scale = (1.0 - p) * 8.0
+    samples = 220
+
+    (0..samples - 1).each do |i|
+      t1 = i.to_f / samples
+      t2 = (i + 1).to_f / samples
+
+      x1 = x_start + t1 * width
+      x2 = x_start + t2 * width
+
+      n1 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+      n2 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+
+      y1 =
+        center_y +
+          Math.sin(2 * Math::PI * (t1 * s.wave_freq + s.phase)) * amplitude + n1
+      y2 =
+        center_y +
+          Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude + n2
+
+      # 主线颜色：随接近度升亮
+      c = 160 + (95 * p).to_i # 160~255
+      lines_main << { x: x1, y: y1, x2: x2, y2: y2, r: c, g: c, b: 255, a: 255 }
+
+      # 若达到发光阈值，再叠加一层 halo
+      if p >= glow_threshold
+        # 更亮、更透明，画几条微小偏移，模拟粗线/光晕
+        halo_alpha = 160
+        halo_color = { r: 220, g: 235, b: 255, a: halo_alpha }
+        offsets = [[0, 0], [0, 1], [0, -1], [1, 0], [-1, 0]]
+        offsets.each do |dx, dy|
+          lines_halo << {
+            x: x1 + dx,
+            y: y1 + dy,
+            x2: x2 + dx,
+            y2: y2 + dy
+          }.merge(halo_color)
+        end
+      end
+    end
+
+    args.outputs.lines << lines_halo unless lines_halo.empty?
+    args.outputs.lines << lines_main
+  end
+  # --- DAY 8 CHANGE END ---
 
   def render_slider(args, s)
     # -------------------------------------------------------------
@@ -909,4 +1070,56 @@ def update_level_progress(args)
       end
     end
   end
+
+  # --- DAY 8 CHANGE START: resonance level ---
+  # 关卡完成后的后续动作（示例：自动切到下一关）
+  if s.level_cleared
+    s.post_clear_frames ||= 0
+    s.post_clear_frames += 1
+
+    if s.post_clear_frames == 1
+      s.clear_banner_timer = 90 # 1.5s 显示“Level Cleared”
+    end
+
+    # 显示简单的过关提示
+    if s.clear_banner_timer && s.clear_banner_timer > 0
+      s.clear_banner_timer -= 1
+      args.outputs.labels << [
+        640,
+        560,
+        "Level Cleared! 即将进入下一关…",
+        0,
+        1,
+        180,
+        240,
+        180
+      ]
+    end
+
+    # 倒计时结束后切到下一关（若有）
+    if s.clear_banner_timer == 0
+      next_index = level_index(args) + 1
+      if LEVELS[next_index]
+        args.state.level_index = next_index
+        # 重新初始化：清理当前场景状态并重建音频
+        @initialized = false
+        init_state(args)
+        ensure_audio_started(args)
+        s.level_cleared = false
+      else
+        # 没有下一关了：留在当前关，显示恭喜
+        args.outputs.labels << [
+          640,
+          520,
+          "All levels complete. 恭喜通关！",
+          0,
+          1,
+          220,
+          240,
+          220
+        ]
+      end
+    end
+  end
+  # --- DAY 8 CHANGE END ---
 end
