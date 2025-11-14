@@ -13,6 +13,12 @@
 #   Day 5:
 #     - 接近提示（Proximity Hint）：当频率接近目标值时，视觉上逐步“净化”——波形更亮、抖动更小；
 #       滑块上出现目标窗口高亮带（Lock Band），并在锁定阈值内显示“Signal locked”。
+#   Day 6–9:
+#     - 引入 LEVELS 配置，区分干涉 / 共振 / 衰减三类关卡，并为每关配置频率、容差与提示文本。
+#     - 根据关卡类型切换波形渲染与音频逻辑，形成 3 个可玩谜题原型。
+#   Day 10:
+#     - 增加关卡标题与整体进度显示（render_level_header），方便进行“谜题整合测试”，
+#       在画面顶部一眼看出当前关卡与完成状态。
 #
 # 主要目标：
 #   - 展示动态“无线电波”视觉效果
@@ -398,11 +404,13 @@ class BootScene
   # -------------------------------------------------------------
   def render(args)
     # -------------------------------------------------------------
-    # 渲染入口：背景 → 波形 → 滑块/锁定带 → 文本
+    # 渲染入口：背景 → 关卡标题 → 波形 → 滑块/锁定带 → 文本
+    # Day 10：在顶部显示当前关卡信息，便于调试与整体验证
     # -------------------------------------------------------------
     s = state(args)
 
     render_background(args)
+    render_level_header(args, s)
     render_wave(args, s)
     render_slider(args, s)
     render_proximity_ui(args, s)
@@ -415,6 +423,44 @@ class BootScene
     # -------------------------------------------------------------
     # 简单深蓝色背景，后续可以替换为图像或更复杂的场景
     args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 5, g: 10, b: 25 }
+  end
+
+  def render_level_header(args, s)
+    # -------------------------------------------------------------
+    # Day 10：关卡标题与整体进度显示
+    # 在画面上方展示：
+    #   - 当前关卡序号 / 总关卡数
+    #   - 关卡名称（如 Interference / Resonance / Attenuation）
+    #   - 当前状态（TUNING / CLEARED / FINAL）
+    # 方便在 Day 10 进行“谜题整合测试”和后续剧情整合。
+    # -------------------------------------------------------------
+    ld = level_data(args) || {}
+    index = level_index(args)
+    total = LEVELS.length
+    name = ld[:name] || "Signal"
+    type = (ld[:type] || :interference).to_s.capitalize
+
+    status =
+      if s.level_cleared && index == total - 1
+        "FINAL"
+      elsif s.level_cleared
+        "CLEARED"
+      else
+        "TUNING"
+      end
+
+    label_text = "Level #{index + 1}/#{total} — #{name} (#{type}) [#{status}]"
+
+    args.outputs.labels << [
+      40, # x
+      700, # y
+      label_text, # 文本
+      0, # 对齐（左对齐）
+      0, # 对齐（基线）
+      210,
+      235,
+      255
+    ]
   end
 
   def render_wave(args, s)
