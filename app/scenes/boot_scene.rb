@@ -30,15 +30,6 @@ class BootScene
     LEVELS[level_index(args)] || LEVELS.last
   end
 
-  # <<<<<<< from a.rb
-  # def target_freq(args)
-  #   (level_data(args)[:freq] rescue nil) || (defined?(TARGET_FREQ) ? TARGET_FREQ.to_f : 4.2)
-  # end
-  # =======
-  # TARGET_FREQ = 4.2
-  # >>>>>>> from b.rb
-  #
-  # 解析：保留 B 版结构，但采用 A 版“按关卡读取”的运行时逻辑
   def target_freq(args)
     if (ld = level_data(args)) && ld[:freq]
       ld[:freq].to_f
@@ -49,13 +40,6 @@ class BootScene
     end
   end
 
-  # <<<<<<< from a.rb
-  # def lock_tolerance(args)
-  #   (level_data(args)[:lock_tolerance] rescue nil) || 0.08
-  # end
-  # =======
-  # LOCK_TOLERANCE = 0.08
-  # >>>>>>> from b.rb
   def lock_tolerance(args)
     if (ld = level_data(args)) && ld[:lock_tolerance]
       ld[:lock_tolerance].to_f
@@ -99,9 +83,9 @@ class BootScene
   # --- DAY 8 CHANGE START: resonance level ---
   # 声音资源常量（集中声明，便于你后续对照修改）
   SND_NOISE_DEFAULT = "sounds/radio_static_16bit.wav"
-  SND_TONE_DEFAULT = "sounds/shortwave_beep.wav"
-  SND_NOISE_RESO = "sounds/resonance_base.wav" # 如文件名不同，改这里即可
-  SND_TONE_RESO = "sounds/resonance_clear.wav" # 如文件名不同，改这里即可
+  SND_TONE_DEFAULT = "sounds/shortwave_beep_16bit.wav"
+  SND_NOISE_RESO = "sounds/radio_static_16bit.wav" # resonance_base.wav 如文件名不同，改这里即可
+  SND_TONE_RESO = "sounds/shortwave_beep_16bit.wav" # resonance_clear.wav 如文件名不同，改这里即可
 
   def level_type(args)
     (
@@ -121,6 +105,19 @@ class BootScene
     }
   end
   # --- DAY 8 CHANGE END ---
+
+  # --- DAY 9 CHANGE START: attenuation level params ---
+  def attenuation_params(args)
+    ld = level_data(args) || {}
+    {
+      # 何时开始衰减（帧数）
+      decay_start_frames: (ld[:decay_start_frames] || 90).to_i,
+      # 从开始衰减到“几乎完全衰减”的持续时间
+      decay_duration_frames: (ld[:decay_duration_frames] || 600).to_i,
+      # 最低残留强度：避免完全为 0，保留一点“幽灵信号”
+      min_decay_factor: (ld[:min_decay_factor] || 0.15).to_f
+    }
+  end
 
   def initialize
     @initialized = false
@@ -163,6 +160,10 @@ class BootScene
     # Day 7：关卡进度状态
     s.locked_frames ||= 0
     s.level_cleared = false if s.level_cleared.nil?
+    # --- DAY 9 CHANGE START: level elapsed frames ---
+    # 记录当前关卡已运行帧数（供“衰减/失真”关卡使用）
+    s.level_elapsed_frames ||= 0
+    # --- DAY 9 CHANGE END ---
 
     # 调频滑块的矩形
     s.slider_rect ||= SLIDER_RECT.dup
@@ -257,6 +258,17 @@ class BootScene
     # 备注：Kernel.tick_count 是自启动以来的帧数，60fps 下 1 秒约 60 帧
     # -------------------------------------------------------------
     s = state(args)
+
+    # --- DAY 9 CHANGE START: attenuation timer ---
+    # 对“衰减/失真”关卡记录已运行的帧数，其它关卡只是确保字段存在
+    if level_type(args) == :attenuation && !s.level_cleared
+      s.level_elapsed_frames ||= 0
+      s.level_elapsed_frames += 1
+    else
+      s.level_elapsed_frames ||= 0
+    end
+    # --- DAY 9 CHANGE END ---
+
     # 简单做一个基于时间的相位偏移，让波形“向前流动”
     # Kernel.tick_count 是游戏运行到现在的总帧数
     # s.phase = Kernel.tick_count / 60.0 * 0.6
@@ -278,30 +290,14 @@ class BootScene
   #   - 越接近目标频率：噪声逐渐变小，信号音变大
   #   - 远离目标频率：噪声占主导，信号音几乎听不到
   # -------------------------------------------------------------
-  # def ensure_audio_started(args)
-  #   # -------------------------------------------------------------
-  #   # 音频：懒加载与循环播放
-  #   # 包含两条轨：radio_noise（噪声）与 radio_tone（信号音）
-  #   # 只需在首次进入场景时启动，之后每帧仅更新 gain
-  #   # -------------------------------------------------------------
-  #   # 只需要在第一次进入场景时设置一次即可
-  #   # radio_static.wav 建议是连续的“沙沙”噪声，放在 app/audio/ 下
-  #   args.audio[:radio_noise] ||= {
-  #     input: "sounds/radio_static_16bit.wav",
-  #     looping: true,
-  #     gain: 0.9
-  #   }
-
-  #   # shortwave_beep.wav 建议是有一点音高的短波哔声，可以循环播放
-  #   args.audio[:radio_tone] ||= {
-  #     input: "sounds/shortwave_beep_16bit.wav",
-  #     looping: true,
-  #     gain: 0.0 # 初始时几乎听不到信号
-  #   }
-  # end
-  # --- DAY 8 CHANGE START: resonance level ---
   def ensure_audio_started(args)
     # 根据关卡类型与关卡自定义字段选择音频文件
+    # -------------------------------------------------------------
+    # 音频：懒加载与循环播放
+    # 包含两条轨：radio_noise（噪声）与 radio_tone（信号音）
+    # 只需在首次进入场景时启动，之后每帧仅更新 gain
+    # -------------------------------------------------------------
+    # 只需要在第一次进入场景时设置一次即可
     ld = level_data(args) || {}
     t = level_type(args)
 
@@ -331,59 +327,61 @@ class BootScene
   end
   # --- DAY 8 CHANGE END ---
 
-  # def update_audio(args)
-  #   # -------------------------------------------------------------
-  #   # 根据频率偏差调节音量（Day 4）
-  #   # 接近目标频率：噪声减小、信号音增大；远离则相反
-  #   # 映射：freq_diff → proximity ∈ [0,1]（指数衰减）
-  #   # -------------------------------------------------------------
-  #   s = state(args)
-
-  #   proximity = compute_proximity(s)
-
-  #   # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
-  #   noise_gain = 0.3 + (1.0 - proximity) * 0.7
-  #   # 信号音量：接近目标频率时接近 1
-  #   tone_gain = proximity
-
-  #   args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
-
-  #   if args.audio[:radio_tone]
-  #     args.audio[:radio_tone].gain = tone_gain
-  #     # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
-  #     # 比如：
-  #     #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
-  #     # 目前先保持 1.0，后续关卡需要时再开启
-  #   end
-
-  #   # 噪声音量：远时接近 1，近时降到一个中等水平（避免完全静音显得太突兀）
-  #   noise_gain = 0.3 + (1.0 - proximity) * 0.7
-  #   # 信号音量：接近目标频率时接近 1
-  #   tone_gain = proximity
-
-  #   args.audio[:radio_noise].gain = noise_gain if args.audio[:radio_noise]
-
-  #   if args.audio[:radio_tone]
-  #     args.audio[:radio_tone].gain = tone_gain
-  #     # 可选：也可以轻微根据当前频率调整 pitch，制造“滑音”感觉：
-  #     # 比如：
-  #     #   args.audio[:radio_tone].pitch = 0.8 + proximity * 0.4
-  #     # 目前先保持 1.0，后续关卡需要时再开启
-  #   end
-  # end
-  # --- DAY 8 CHANGE START: resonance level ---
   def update_audio(args)
+    # -------------------------------------------------------------
+    # 根据频率偏差调节音量（Day 4）
+    # 接近目标频率：噪声减小、信号音增大；远离则相反
+    # 映射：freq_diff → proximity ∈ [0,1]（指数衰减）
+    # -------------------------------------------------------------
     s = state(args)
     proximity = compute_proximity(s)
 
-    if level_type(args) == :resonance
+    case level_type(args)
+    when :resonance
       # 共振：信号更清晰、噪声更快收敛
       tone_gain = 0.15 + 0.85 * (proximity**2)
       noise_gain = 0.15 + 0.85 * (1.0 - proximity**2)
       # 可选：让音调也随接近度略微上扬
-      args.audio[:radio_tone].pitch = 0.9 + 0.2 * proximity if args.audio[
-        :radio_tone
-      ]
+      if args.audio[:radio_tone]
+        args.audio[:radio_tone].pitch = 0.9 + 0.2 * proximity
+      end
+
+      # --- DAY 9 CHANGE START: attenuation audio ---
+    when :attenuation
+      params = attenuation_params(args)
+      elapsed = (s.level_elapsed_frames || 0).to_i
+      start = params[:decay_start_frames]
+      dur = params[:decay_duration_frames]
+      min_f = params[:min_decay_factor]
+
+      # 计算随时间变化的衰减因子 decay_factor ∈ [min_f, 1]
+      if elapsed <= start
+        decay_factor = 1.0
+      else
+        t = ((elapsed - start).to_f / dur.to_f)
+        t = 1.0 if t > 1.0
+        t = 0.0 if t < 0.0
+        decay_factor = 1.0 - t
+      end
+      decay_factor = min_f if decay_factor < min_f
+
+      base_tone = proximity
+      base_noise = 0.3 + (1.0 - proximity) * 0.7
+
+      # 信号：随时间整体变弱，但接近目标时仍略有优势
+      tone_gain = base_tone * (0.25 + 0.75 * decay_factor)
+      # 噪声：随衰减逐渐加强，模拟“信号被噪声吞没”
+      noise_mix = 0.4 + 0.6 * (1.0 - decay_factor)
+      noise_gain = base_noise * noise_mix
+
+      # 轻微 pitch 抖动，制造“失真感”
+      if args.audio[:radio_tone]
+        jitter = (1.0 - decay_factor) * 0.04
+        base_pitch = 1.0 + (proximity * 0.1)
+        args.audio[:radio_tone].pitch =
+          base_pitch + (Kernel.rand * jitter - jitter * 0.5)
+      end
+      # --- DAY 9 CHANGE END: attenuation audio ---
     else
       # 其它关卡沿用 Day 4 的默认曲线
       tone_gain = proximity
@@ -419,67 +417,13 @@ class BootScene
     args.outputs.solids << { x: 0, y: 0, w: 1280, h: 720, r: 5, g: 10, b: 25 }
   end
 
-  # def render_wave(args, s)
-  #   # -------------------------------------------------------------
-  #   # 绘制波形：用多段线近似正弦曲线
-  #   # Day 5：离目标越近，抖动越小、亮度越高（“净化”效果）
-  #   # 实现：基础振幅 + 轻微随机扰动（随 proximity 衰减）
-  #   # -------------------------------------------------------------
-  #   # 接近度用于视觉“净化”
-  #   proximity = compute_proximity(s)
-
-  #   lines = []
-  #   x_start = 80
-  #   x_end = 1200
-  #   width = x_end - x_start
-  #   center_y = 420
-
-  #   # 振幅与随机抖动：越接近越稳定
-  #   base_amplitude = 56
-  #   # Day 5：接近时抖动收敛；远离时抖动明显
-  #   jitter_scale = (1.0 - proximity) * 12.0
-
-  #   samples = 220
-  #   amplitude = base_amplitude
-
-  #   (0..samples - 1).each do |i|
-  #     t1 = i.to_f / samples
-  #     t2 = (i + 1).to_f / samples
-
-  #     x1 = x_start + t1 * width
-  #     x2 = x_start + t2 * width
-
-  #     # 引入轻微随机抖动（只影响远离时的“噪波”感）
-  #     n1 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
-  #     n2 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
-
-  #     y1 =
-  #       center_y +
-  #         Math.sin(2 * Math::PI * (t1 * s.wave_freq + s.phase)) * amplitude + n1
-  #     y2 =
-  #       center_y +
-  #         Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude + n2
-
-  #     # 基础波线：颜色随接近度增亮
-  #     c = 160 + (95 * proximity).to_i # 160~255
-  #     lines << { x: x1, y: y1, x2: x2, y2: y2, r: c, g: c - 20, b: 255 }
-  #   end
-
-  #   args.outputs.lines << lines
-  # end
-
-  # def render_wave(args, s)
-  #   ld = level_data(args)
-
-  # Day 7：关卡 1 使用干涉波原型渲染，其它暂时使用单波渲染
-  #   if ld && ld[:id] == 1
-  #     render_interference_wave(args, s)
-  #   else
-  #     render_single_wave(args, s)
-  #   end
-  # end
-  # --- DAY 8 CHANGE START: resonance level ---
   def render_wave(args, s)
+    # -------------------------------------------------------------
+    # 绘制波形：用多段线近似正弦曲线
+    # Day 5：离目标越近，抖动越小、亮度越高（“净化”效果）
+    # 实现：基础振幅 + 轻微随机扰动（随 proximity 衰减）
+    # -------------------------------------------------------------
+    # 接近度用于视觉“净化”
     ld = level_data(args)
 
     case (ld && ld[:type])
@@ -487,6 +431,9 @@ class BootScene
       render_interference_wave(args, s)
     when :resonance
       render_resonance_wave(args, s)
+    when :attenuation
+      # --- DAY 9 CHANGE: 使用专门的衰减波渲染 ---
+      render_attenuation_wave(args, s)
     else
       render_single_wave(args, s)
     end
@@ -743,6 +690,93 @@ class BootScene
   end
   # --- DAY 8 CHANGE END ---
 
+  # --- DAY 9 CHANGE START: attenuation wave rendering ---
+  # 衰减关卡波形：
+  #   - 接近目标频率：波形仍相对平稳
+  #   - 随时间推移：整体亮度和振幅下降，抖动和“噪点”增加
+  def render_attenuation_wave(args, s)
+    p = compute_proximity(s)
+    params = attenuation_params(args)
+    elapsed = (s.level_elapsed_frames || 0).to_i
+    start = params[:decay_start_frames]
+    dur = params[:decay_duration_frames]
+    min_f = params[:min_decay_factor]
+
+    if elapsed <= start
+      decay_factor = 1.0
+    else
+      t = ((elapsed - start).to_f / dur.to_f)
+      t = 1.0 if t > 1.0
+      t = 0.0 if t < 0.0
+      decay_factor = 1.0 - t
+    end
+    decay_factor = min_f if decay_factor < min_f
+
+    x_start = 80
+    x_end = 1200
+    width = x_end - x_start
+    center_y = 420
+
+    base_amplitude = 56
+    # 接近目标时放大一点，但整体受 decay_factor 压制
+    amp_scale = (0.4 + 0.6 * p) * (0.4 + 0.6 * decay_factor)
+    amplitude = base_amplitude * amp_scale
+
+    # 抖动：远离 + 衰减越严重，抖动越大
+    jitter_prox = (1.0 - p) * 8.0
+    jitter_decay = (1.0 - decay_factor) * 12.0
+    jitter_scale = jitter_prox + jitter_decay
+
+    samples = 220
+    lines = []
+
+    (0..samples - 1).each do |i|
+      t1 = i.to_f / samples
+      t2 = (i + 1).to_f / samples
+
+      x1 = x_start + t1 * width
+      x2 = x_start + t2 * width
+
+      n1 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+      n2 = (Kernel.rand * jitter_scale) - jitter_scale * 0.5
+
+      y1 =
+        center_y +
+          Math.sin(2 * Math::PI * (t1 * s.wave_freq + s.phase)) * amplitude + n1
+      y2 =
+        center_y +
+          Math.sin(2 * Math::PI * (t2 * s.wave_freq + s.phase)) * amplitude + n2
+
+      # 颜色：随接近度和衰减因子一起变暗
+      c = (120 + 95 * p * decay_factor).to_i # 120 ~ 215
+      a = (80 + 175 * decay_factor).to_i # 80 ~ 255
+
+      lines << { x: x1, y: y1, x2: x2, y2: y2, r: c, g: c - 20, b: 255, a: a }
+    end
+
+    args.outputs.lines << lines
+
+    # 额外：在衰减接近尾声时，加一点横向“噪点线”模拟信号崩坏
+    if decay_factor <= min_f + 0.05
+      glitch_lines = []
+      10.times do
+        y = center_y + (Kernel.rand * 140 - 70)
+        glitch_lines << {
+          x: x_start,
+          y: y,
+          x2: x_end,
+          y2: y,
+          r: 180,
+          g: 180,
+          b: 255,
+          a: 80
+        }
+      end
+      args.outputs.lines << glitch_lines
+    end
+  end
+  # --- DAY 9 CHANGE END: attenuation wave rendering ---
+
   def render_slider(args, s)
     # -------------------------------------------------------------
     # 绘制调频滑块（frequency slider）
@@ -804,25 +838,6 @@ class BootScene
     proximity = 0.0 if proximity < 0.0
     proximity = 1.0 if proximity > 1.0
 
-    # locked = freq_diff <= lock_tolerance(args)
-    # # Day 6: 关卡推进（A 版逻辑）
-    # if locked
-    #   hint = level_hint(args)
-    #   args.outputs.labels << [
-    #     rect[:x],
-    #     rect[:y] + rect[:h] + 90,
-    #     (hint || "Signal locked. Press Enter to continue."),
-    #     0,
-    #     0,
-    #     200,
-    #     240,
-    #     255
-    #   ]
-    #   if args.inputs.keyboard.key_down.enter ||
-    #        args.inputs.keyboard.key_down.space
-    #     advance_level!(args)
-    #   end
-    # end
     locked = freq_diff <= lock_tolerance(args)
     frames_needed = success_hold_frames(args)
 
@@ -1021,6 +1036,11 @@ def advance_level!(args)
   # Day 7：重置关卡进度
   s.locked_frames = 0
   s.level_cleared = false
+
+  # --- DAY 9 CHANGE START: reset elapsed frames ---
+  # 新关卡开始时，清零衰减计时
+  s.level_elapsed_frames = 0
+  # --- DAY 9 CHANGE END ---
 end
 
 # --- 小工具 ---
