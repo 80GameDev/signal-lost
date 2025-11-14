@@ -64,6 +64,19 @@ class BootScene
     )
   end
 
+  # Day 11：根据当前关卡 id 返回对应的故事文本数组
+  def story_lines_for_level(args)
+    return [] unless defined?(STORY_TEXTS)
+
+    ld = level_data(args) || {}
+    id = ld[:id]
+
+    return [] unless id && STORY_TEXTS[id]
+    STORY_TEXTS[id]
+  rescue StandardError
+    []
+  end
+
   # 若外部未定义 LEVELS，这里提供一个最小默认，保证兼容
   LEVELS = [
     {
@@ -415,6 +428,7 @@ class BootScene
     render_slider(args, s)
     render_proximity_ui(args, s)
     render_lock_band(args, s)
+    render_story_overlay(args, s) # Day 11：过关时显示剧情短句
   end
 
   def render_background(args)
@@ -1067,6 +1081,44 @@ def render_lock_band(args, s)
   }
 end
 
+# Day 11：关卡故事文本 Overlay
+# 仅在 s.level_cleared 为 true 时显示，用于呈现 STORY_TEXTS 中的短句
+def render_story_overlay(args, s)
+  return unless s.level_cleared
+
+  # 优先使用已缓存的故事文本，若为空则临时再查一次
+  lines = s.story_lines
+  lines = story_lines_for_level(args) if !lines || lines.empty?
+  return if !lines || lines.empty?
+
+  base_y = 420
+
+  lines.each_with_index do |text, idx|
+    args.outputs.labels << [
+      640, # x（居中）
+      base_y - idx * 32, # y（逐行往下）
+      text,
+      0, # 对齐：居中
+      1, # 基线：中线
+      230,
+      230,
+      240 # 颜色：略偏冷的灰白
+    ]
+  end
+
+  # 底部加一行轻微提示，营造“正在接收片段”的感觉
+  args.outputs.labels << [
+    640,
+    base_y - lines.length * 32 - 20,
+    "…Receiving story fragment. 正在接收片段…",
+    0,
+    1,
+    150,
+    180,
+    210
+  ]
+end
+
 # Day 6：当锁定后推进到下一关，并刷新与关卡相关的状态
 # 当锁定后推进到下一关，并刷新与关卡相关的状态
 def advance_level!(args)
@@ -1130,6 +1182,9 @@ def update_level_progress(args)
     if s.locked_frames >= frames_needed
       s.level_cleared = true
 
+      # Day 11：在首次通关时缓存本关故事文本
+      s.story_lines = story_lines_for_level(args)
+
       # Day 7：对关卡 1 触发全局标记
       if (ld = level_data(args)) && ld[:id] == 1
         args.state.level1_cleared = true
@@ -1144,7 +1199,8 @@ def update_level_progress(args)
     s.post_clear_frames += 1
 
     if s.post_clear_frames == 1
-      s.clear_banner_timer = 90 # 1.5s 显示“Level Cleared”
+      s.clear_banner_timer = 300 # 约 5 秒（60 fps）
+      # 曾经是90, 约 1.5s 显示“Level Cleared”
     end
 
     # 显示简单的过关提示
